@@ -3,6 +3,6 @@ bots:
   - snyk-bot
   - renovate[bot]
 maintainers:
-  - olegkoval
+  - oleg-koval
 merge_method: squash
 dependabot_rebase_comment: "@dependabot rebase"

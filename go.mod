@@ -1,4 +1,4 @@
-module github.com/olegkoval/pr-automerge-github-action
+module github.com/oleg-koval/pr-automerge-github-action
 
 go 1.22
 

@@ -25,7 +25,7 @@ jobs:
       - uses: oleg-koval/pr-automerge-github-action@v1
         with:
           github-token: ${{ github.token }}
-          maintainer-handles: olegkoval,octocat
+          maintainer-handles: oleg-koval,octocat
 ```
 
 ## Inputs
@@ -49,7 +49,7 @@ bots:
   - snyk-bot
   - renovate[bot]
 maintainers:
-  - olegkoval
+  - oleg-koval
   - octocat
 merge_method: squash
 dependabot_rebase_comment: "@dependabot rebase"

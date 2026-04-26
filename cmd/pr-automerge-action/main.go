@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/olegkoval/pr-automerge-github-action/internal/action"
+	"github.com/oleg-koval/pr-automerge-github-action/internal/action"
 )
 
 func main() {
