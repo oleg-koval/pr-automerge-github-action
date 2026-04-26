@@ -66,7 +66,7 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return nil
 	}
 
-	state, err := evaluateChecks(ctx, gh, repo, pr.Head.SHA)
+	state, err := evaluateChecks(ctx, gh, repo, pr.Head.SHA, env.get("GITHUB_RUN_ID"))
 	if err != nil {
 		return err
 	}
@@ -105,7 +105,7 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	return nil
 }
 
-func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string) (checkState, error) {
+func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, currentRunID string) (checkState, error) {
 	status, err := gh.getCombinedStatus(ctx, repo, sha)
 	if err != nil && !isOptionalAPIError(err) {
 		return checksFailed, err
@@ -121,6 +121,9 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 		return checksFailed, nil
 	}
 	for _, run := range runs.CheckRuns {
+		if isCurrentRun(run, currentRunID) {
+			continue
+		}
 		if run.Status != "completed" {
 			return checksPending, nil
 		}
@@ -136,6 +139,10 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 
 func isOptionalAPIError(err error) bool {
 	return err == errNotFound
+}
+
+func isCurrentRun(run checkRun, currentRunID string) bool {
+	return currentRunID != "" && strings.Contains(run.DetailsURL, "/actions/runs/"+currentRunID)
 }
 
 func allowedConclusion(conclusion string) bool {

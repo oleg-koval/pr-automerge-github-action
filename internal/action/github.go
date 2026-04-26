@@ -65,6 +65,7 @@ type checkRun struct {
 	Name       string  `json:"name"`
 	Status     string  `json:"status"`
 	Conclusion *string `json:"conclusion"`
+	DetailsURL string  `json:"details_url"`
 }
 
 type issueComment struct {

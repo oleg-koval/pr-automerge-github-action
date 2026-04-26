@@ -43,6 +43,7 @@ func TestActionE2E(t *testing.T) {
 		wantMerged        bool
 		wantCommentPart   string
 		wantNoComment     bool
+		includeCurrentRun bool
 		wantNoAPIRequired bool
 	}{
 		{
@@ -109,6 +110,19 @@ func TestActionE2E(t *testing.T) {
 			wantCommentPart: "may be a breaking dependency or security update",
 		},
 		{
+			name:              "ignores its own pending check run",
+			eventName:         "pull_request_target",
+			actor:             "dependabot[bot]",
+			mergeable:         &mergeable,
+			mergeableState:    "clean",
+			statusState:       "success",
+			checkConclusion:   "success",
+			includeCurrentRun: true,
+			mergeStatus:       http.StatusOK,
+			wantMerged:        true,
+			wantNoComment:     true,
+		},
+		{
 			name:            "mentions maintainers when merge fails",
 			eventName:       "pull_request_target",
 			actor:           "dependabot[bot]",
@@ -140,6 +154,20 @@ func TestActionE2E(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			checkRuns := []map[string]any{{
+				"name":       "ci",
+				"status":     "completed",
+				"conclusion": tt.checkConclusion,
+			}}
+			if tt.includeCurrentRun {
+				checkRuns = append(checkRuns, map[string]any{
+					"name":        "automerge",
+					"status":      "in_progress",
+					"conclusion":  nil,
+					"details_url": "https://github.com/owner/repo/actions/runs/123456/job/789",
+				})
+			}
+
 			fake := &fakeGitHub{
 				pr: map[string]any{
 					"number":          7,
@@ -149,12 +177,8 @@ func TestActionE2E(t *testing.T) {
 					"user":            map[string]string{"login": tt.actor},
 					"head":            map[string]string{"sha": "abc123"},
 				},
-				status: map[string]any{"state": tt.statusState},
-				checkRuns: map[string]any{"check_runs": []map[string]any{{
-					"name":       "ci",
-					"status":     "completed",
-					"conclusion": tt.checkConclusion,
-				}}},
+				status:      map[string]any{"state": tt.statusState},
+				checkRuns:   map[string]any{"check_runs": checkRuns},
 				comments:    append([]map[string]string(nil), tt.existingComments...),
 				mergeStatus: tt.mergeStatus,
 			}
@@ -168,6 +192,7 @@ func TestActionE2E(t *testing.T) {
 				"GITHUB_REPOSITORY=owner/repo",
 				"GITHUB_API_URL=" + server.URL,
 				"GITHUB_TOKEN=test-token",
+				"GITHUB_RUN_ID=123456",
 				"INPUT_MAINTAINER_HANDLES=alice,bob",
 			}
 			var logs strings.Builder
