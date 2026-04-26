@@ -231,6 +231,12 @@ func TestActionE2E(t *testing.T) {
 			if tt.wantMergeComment && !strings.Contains(fake.createdComment, "Automerge approved for this maintenance bot PR") {
 				t.Fatalf("created comment = %q, want merge approval comment", fake.createdComment)
 			}
+			if tt.wantMergeComment && !strings.Contains(fake.createdComment, "Managed by [oleg-koval/pr-automerge-github-action]") {
+				t.Fatalf("created comment = %q, want action attribution", fake.createdComment)
+			}
+			if tt.wantMergeComment && !strings.Contains(fake.createdComment, "media.giphy.com/media/") {
+				t.Fatalf("created comment = %q, want celebration GIF", fake.createdComment)
+			}
 		})
 	}
 }

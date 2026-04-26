@@ -59,7 +59,7 @@ dependabot_rebase_comment: "@dependabot rebase"
 
 The action exits successfully outside PR events. It ignores PRs not opened by allowed bot logins and ignores draft PRs. It merges only when checks and statuses are successful and GitHub reports the PR as mergeable.
 
-If checks fail, the action treats the update as potentially breaking and mentions maintainers. If a Dependabot PR has a merge conflict, it comments `@dependabot rebase`. If another bot PR has a conflict, it mentions maintainers. Duplicate comments for the same PR head SHA and reason are suppressed.
+If checks fail, the action treats the update as potentially breaking and mentions maintainers. If a Dependabot PR has a merge conflict, it comments `@dependabot rebase`. If another bot PR has a conflict, it mentions maintainers. Before merging, it comments what it is doing with attribution to this action and a small celebration GIF. Duplicate comments for the same PR head SHA and reason are suppressed.
 
 ## Release
 

@@ -93,7 +93,7 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 
-	body := markerComment(pr, "merge-approved", fmt.Sprintf("Automerge approved for this maintenance bot PR. Checks passed, GitHub reports the PR as mergeable, and this action is merging it with the %s method.", cfg.MergeMethod))
+	body := mergeApprovedComment(pr, cfg.MergeMethod)
 	if err := postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger); err != nil {
 		return err
 	}
@@ -178,6 +178,24 @@ func containsLogin(logins []string, login string) bool {
 		}
 	}
 	return false
+}
+
+func mergeApprovedComment(pr pullRequest, mergeMethod string) string {
+	message := fmt.Sprintf("Automerge approved for this maintenance bot PR. Checks passed, GitHub reports the PR as mergeable, and pr-automerge-github-action is merging it with the %s method.\n\nManaged by [oleg-koval/pr-automerge-github-action](https://github.com/oleg-koval/pr-automerge-github-action).\n\n![Tiny merge celebration](%s)", mergeMethod, successGIF(pr.Head.SHA))
+	return markerComment(pr, "merge-approved", message)
+}
+
+func successGIF(seed string) string {
+	gifs := []string{
+		"https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
+		"https://media.giphy.com/media/26u4lOMA8JKSnL9Uk/giphy.gif",
+		"https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif",
+	}
+	var sum int
+	for _, char := range seed {
+		sum += int(char)
+	}
+	return gifs[sum%len(gifs)]
 }
 
 func markerComment(pr pullRequest, reason string, message string) string {
