@@ -54,7 +54,13 @@ type contentResponse struct {
 }
 
 type combinedStatus struct {
-	State string `json:"state"`
+	State    string         `json:"state"`
+	Statuses []commitStatus `json:"statuses"`
+}
+
+type commitStatus struct {
+	Context string `json:"context"`
+	State   string `json:"state"`
 }
 
 type checkRunsResponse struct {

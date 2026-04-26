@@ -37,6 +37,7 @@ func TestActionE2E(t *testing.T) {
 		mergeable         *bool
 		mergeableState    string
 		statusState       string
+		legacyStatusCount int
 		checkConclusion   string
 		mergeStatus       int
 		existingComments  []map[string]string
@@ -110,6 +111,18 @@ func TestActionE2E(t *testing.T) {
 			wantCommentPart: "may be a breaking dependency or security update",
 		},
 		{
+			name:            "ignores empty pending legacy status",
+			eventName:       "pull_request_target",
+			actor:           "dependabot[bot]",
+			mergeable:       &mergeable,
+			mergeableState:  "clean",
+			statusState:     "pending",
+			checkConclusion: "success",
+			mergeStatus:     http.StatusOK,
+			wantMerged:      true,
+			wantNoComment:   true,
+		},
+		{
 			name:              "ignores its own pending check run",
 			eventName:         "pull_request_target",
 			actor:             "dependabot[bot]",
@@ -168,6 +181,11 @@ func TestActionE2E(t *testing.T) {
 				})
 			}
 
+			statuses := make([]map[string]any, 0, tt.legacyStatusCount)
+			for i := 0; i < tt.legacyStatusCount; i++ {
+				statuses = append(statuses, map[string]any{"context": "legacy", "state": tt.statusState})
+			}
+
 			fake := &fakeGitHub{
 				pr: map[string]any{
 					"number":          7,
@@ -177,7 +195,7 @@ func TestActionE2E(t *testing.T) {
 					"user":            map[string]string{"login": tt.actor},
 					"head":            map[string]string{"sha": "abc123"},
 				},
-				status:      map[string]any{"state": tt.statusState},
+				status:      map[string]any{"state": tt.statusState, "statuses": statuses},
 				checkRuns:   map[string]any{"check_runs": checkRuns},
 				comments:    append([]map[string]string(nil), tt.existingComments...),
 				mergeStatus: tt.mergeStatus,

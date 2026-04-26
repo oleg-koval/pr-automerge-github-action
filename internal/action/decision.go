@@ -114,7 +114,7 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 	if err != nil && !isOptionalAPIError(err) {
 		return checksFailed, err
 	}
-	if status.State == "pending" {
+	if status.State == "pending" && len(status.Statuses) > 0 {
 		return checksPending, nil
 	}
 	if status.State == "failure" || status.State == "error" {
