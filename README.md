@@ -22,7 +22,7 @@ jobs:
   automerge:
     runs-on: ubuntu-latest
     steps:
-      - uses: olegkoval/pr-automerge-github-action@v1
+      - uses: oleg-koval/pr-automerge-github-action@v1
         with:
           github-token: ${{ github.token }}
           maintainer-handles: olegkoval,octocat
