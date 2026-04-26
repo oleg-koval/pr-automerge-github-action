@@ -1,0 +1,42 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: |
+          test -z "$(gofmt -l .)"
+      - name: Check modules
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Run tests
+        run: go test ./...
+      - name: Build action binary
+        run: go build ./cmd/pr-automerge-action
+      - name: Build Docker action
+        run: docker build .
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest

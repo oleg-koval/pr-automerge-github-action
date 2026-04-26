@@ -1,0 +1,7 @@
+# Build artifacts
+/pr-automerge-action
+/dist/
+
+# Local files
+.DS_Store
+.env

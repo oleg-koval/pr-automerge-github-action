@@ -1,0 +1,25 @@
+name: PR bot automerge
+description: Automerge pull requests from configured maintenance bots and escalate failures to maintainers.
+inputs:
+  github-token:
+    description: GitHub token used to read PR state, comment, and merge.
+    required: false
+    default: ${{ github.token }}
+  bot-logins:
+    description: Comma-separated bot logins allowed to automerge.
+    required: false
+  maintainer-handles:
+    description: Comma-separated GitHub handles to mention when manual action is needed.
+    required: true
+  merge-method:
+    description: Merge method. One of merge, squash, rebase.
+    required: false
+  config-path:
+    description: Repository config path.
+    required: false
+  dry-run:
+    description: Log intended actions without commenting or merging.
+    required: false
+runs:
+  using: docker
+  image: Dockerfile

@@ -1,0 +1,8 @@
+bots:
+  - dependabot[bot]
+  - snyk-bot
+  - renovate[bot]
+maintainers:
+  - olegkoval
+merge_method: squash
+dependabot_rebase_comment: "@dependabot rebase"

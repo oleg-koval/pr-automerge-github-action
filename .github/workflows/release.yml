@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: |
+          test -z "$(gofmt -l .)"
+      - name: Check modules
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Run tests
+        run: go test ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+      - name: Build Docker action
+        run: docker build .
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
