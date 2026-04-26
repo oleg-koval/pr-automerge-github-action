@@ -93,6 +93,11 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 
+	body := markerComment(pr, "merge-approved", fmt.Sprintf("Automerge approved for this maintenance bot PR. Checks passed, GitHub reports the PR as mergeable, and this action is merging it with the %s method.", cfg.MergeMethod))
+	if err := postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger); err != nil {
+		return err
+	}
+
 	if cfg.DryRun {
 		logger.Printf("dry run: would merge PR #%d with method %s", pr.Number, cfg.MergeMethod)
 		return nil

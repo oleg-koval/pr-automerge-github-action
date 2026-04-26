@@ -44,6 +44,7 @@ func TestActionE2E(t *testing.T) {
 		wantMerged        bool
 		wantCommentPart   string
 		wantNoComment     bool
+		wantMergeComment  bool
 		includeCurrentRun bool
 		wantNoAPIRequired bool
 	}{
@@ -55,16 +56,16 @@ func TestActionE2E(t *testing.T) {
 			wantNoAPIRequired: true,
 		},
 		{
-			name:            "merges allowed bot when checks pass",
-			eventName:       "pull_request_target",
-			actor:           "dependabot[bot]",
-			mergeable:       &mergeable,
-			mergeableState:  "clean",
-			statusState:     "success",
-			checkConclusion: "success",
-			mergeStatus:     http.StatusOK,
-			wantMerged:      true,
-			wantNoComment:   true,
+			name:             "merges allowed bot when checks pass",
+			eventName:        "pull_request_target",
+			actor:            "dependabot[bot]",
+			mergeable:        &mergeable,
+			mergeableState:   "clean",
+			statusState:      "success",
+			checkConclusion:  "success",
+			mergeStatus:      http.StatusOK,
+			wantMerged:       true,
+			wantMergeComment: true,
 		},
 		{
 			name:            "ignores human pull requests",
@@ -111,16 +112,16 @@ func TestActionE2E(t *testing.T) {
 			wantCommentPart: "may be a breaking dependency or security update",
 		},
 		{
-			name:            "ignores empty pending legacy status",
-			eventName:       "pull_request_target",
-			actor:           "dependabot[bot]",
-			mergeable:       &mergeable,
-			mergeableState:  "clean",
-			statusState:     "pending",
-			checkConclusion: "success",
-			mergeStatus:     http.StatusOK,
-			wantMerged:      true,
-			wantNoComment:   true,
+			name:             "ignores empty pending legacy status",
+			eventName:        "pull_request_target",
+			actor:            "dependabot[bot]",
+			mergeable:        &mergeable,
+			mergeableState:   "clean",
+			statusState:      "pending",
+			checkConclusion:  "success",
+			mergeStatus:      http.StatusOK,
+			wantMerged:       true,
+			wantMergeComment: true,
 		},
 		{
 			name:              "ignores its own pending check run",
@@ -133,7 +134,7 @@ func TestActionE2E(t *testing.T) {
 			includeCurrentRun: true,
 			mergeStatus:       http.StatusOK,
 			wantMerged:        true,
-			wantNoComment:     true,
+			wantMergeComment:  true,
 		},
 		{
 			name:            "mentions maintainers when merge fails",
@@ -226,6 +227,9 @@ func TestActionE2E(t *testing.T) {
 			}
 			if tt.wantCommentPart != "" && !strings.Contains(fake.createdComment, tt.wantCommentPart) {
 				t.Fatalf("created comment = %q, want to contain %q", fake.createdComment, tt.wantCommentPart)
+			}
+			if tt.wantMergeComment && !strings.Contains(fake.createdComment, "Automerge approved for this maintenance bot PR") {
+				t.Fatalf("created comment = %q, want merge approval comment", fake.createdComment)
 			}
 		})
 	}
