@@ -17,6 +17,12 @@ inputs:
   config-path:
     description: Repository config path.
     required: false
+  wait-timeout:
+    description: Maximum time to wait for other checks before deciding. Use Go duration syntax, for example 30m or 0s.
+    required: false
+  wait-interval:
+    description: Poll interval while waiting for checks. Use Go duration syntax, for example 30s.
+    required: false
   dry-run:
     description: Log intended actions without commenting or merging.
     required: false

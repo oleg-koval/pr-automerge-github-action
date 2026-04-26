@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 )
 
 type checkState string
@@ -66,7 +67,7 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return nil
 	}
 
-	state, err := evaluateChecks(ctx, gh, repo, pr.Head.SHA, env.get("GITHUB_RUN_ID"))
+	state, err := waitForChecks(ctx, gh, cfg, repo, pr.Head.SHA, env.get("GITHUB_RUN_ID"), logger)
 	if err != nil {
 		return err
 	}
@@ -108,6 +109,22 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	}
 	logger.Printf("merged PR #%d with method %s", pr.Number, cfg.MergeMethod)
 	return nil
+}
+
+func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo string, sha string, currentRunID string, logger *log.Logger) (checkState, error) {
+	deadline := time.Now().Add(cfg.WaitTimeout)
+	for {
+		state, err := evaluateChecks(ctx, gh, repo, sha, currentRunID)
+		if err != nil || state != checksPending || cfg.WaitTimeout == 0 || time.Now().After(deadline) {
+			return state, err
+		}
+		logger.Printf("checks pending for %s; waiting %s", sha, cfg.WaitInterval)
+		select {
+		case <-ctx.Done():
+			return checksPending, ctx.Err()
+		case <-time.After(cfg.WaitInterval):
+		}
+	}
 }
 
 func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, currentRunID string) (checkState, error) {

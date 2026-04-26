@@ -7,16 +7,19 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Bots                    []string `yaml:"bots"`
-	Maintainers             []string `yaml:"maintainers"`
-	MergeMethod             string   `yaml:"merge_method"`
-	DependabotRebaseComment string   `yaml:"dependabot_rebase_comment"`
-	DryRun                  bool     `yaml:"dry_run"`
+	Bots                    []string      `yaml:"bots"`
+	Maintainers             []string      `yaml:"maintainers"`
+	MergeMethod             string        `yaml:"merge_method"`
+	DependabotRebaseComment string        `yaml:"dependabot_rebase_comment"`
+	WaitTimeout             time.Duration `yaml:"wait_timeout"`
+	WaitInterval            time.Duration `yaml:"wait_interval"`
+	DryRun                  bool          `yaml:"dry_run"`
 }
 
 const defaultDependabotRebaseComment = "@dependabot rebase"
@@ -26,6 +29,8 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 		Bots:                    []string{"dependabot[bot]", "snyk-bot", "renovate[bot]"},
 		MergeMethod:             "squash",
 		DependabotRebaseComment: defaultDependabotRebaseComment,
+		WaitTimeout:             30 * time.Minute,
+		WaitInterval:            30 * time.Second,
 	}
 
 	configPath := valueOr(env.input("config-path"), ".github/pr-bot-automerge.yml")
@@ -47,6 +52,20 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 	if value := env.input("dry-run"); value != "" {
 		cfg.DryRun = strings.EqualFold(value, "true")
 	}
+	if value := env.input("wait-timeout"); value != "" {
+		duration, err := parseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid wait-timeout: %w", err)
+		}
+		cfg.WaitTimeout = duration
+	}
+	if value := env.input("wait-interval"); value != "" {
+		duration, err := parseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid wait-interval: %w", err)
+		}
+		cfg.WaitInterval = duration
+	}
 	if cfg.DependabotRebaseComment == "" {
 		cfg.DependabotRebaseComment = defaultDependabotRebaseComment
 	}
@@ -58,6 +77,12 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 	}
 	if cfg.MergeMethod != "merge" && cfg.MergeMethod != "squash" && cfg.MergeMethod != "rebase" {
 		return Config{}, fmt.Errorf("invalid merge method %q", cfg.MergeMethod)
+	}
+	if cfg.WaitTimeout < 0 {
+		return Config{}, errors.New("wait-timeout must be zero or positive")
+	}
+	if cfg.WaitInterval <= 0 {
+		return Config{}, errors.New("wait-interval must be positive")
 	}
 	return cfg, nil
 }
@@ -106,6 +131,12 @@ func mergeConfig(base Config, override Config) Config {
 	if override.DependabotRebaseComment != "" {
 		base.DependabotRebaseComment = override.DependabotRebaseComment
 	}
+	if override.WaitTimeout != 0 {
+		base.WaitTimeout = override.WaitTimeout
+	}
+	if override.WaitInterval != 0 {
+		base.WaitInterval = override.WaitInterval
+	}
 	if override.DryRun {
 		base.DryRun = true
 	}
@@ -122,6 +153,22 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+func parseDuration(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err == nil {
+		return duration, nil
+	}
+	seconds, parseErr := time.ParseDuration(value + "s")
+	if parseErr == nil {
+		return seconds, nil
+	}
+	return 0, err
 }
 
 func valueOr(value string, fallback string) string {
