@@ -27,7 +27,7 @@ jobs:
           git diff --exit-code -- go.mod go.sum
       - name: Run tests
         run: go test ./...
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
         with:
           version: latest
       - name: Build Docker action
