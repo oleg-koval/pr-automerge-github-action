@@ -64,7 +64,7 @@ ignored_check_names:
 
 ## Behavior
 
-The action exits successfully outside PR events. It ignores PRs not opened by allowed bot logins and ignores draft PRs. It waits for pending checks by default, then merges only when checks and statuses are successful and GitHub reports the PR as mergeable. If the automerge job lives in the same workflow as validation jobs, make it depend on those jobs with `needs`; if validation lives in separate workflows, the built-in wait loop handles it.
+The action exits successfully outside PR events. It ignores PRs not opened by allowed bot logins and ignores draft PRs. It waits for pending checks by default, syncs behind PR branches with the target branch, then merges only when checks and statuses are successful and GitHub reports the PR as mergeable. If the automerge job lives in the same workflow as validation jobs, make it depend on those jobs with `needs`; if validation lives in separate workflows, the built-in wait loop handles it.
 
 If checks fail, the action treats the update as potentially breaking and mentions maintainers. If a Dependabot PR has a merge conflict, it comments `@dependabot rebase`. If another bot PR has a conflict, it mentions maintainers. Before merging, it comments what it is doing with attribution to this action and a small celebration GIF. Duplicate comments for the same PR head SHA and reason are suppressed.
 

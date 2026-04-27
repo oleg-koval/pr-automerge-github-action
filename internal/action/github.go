@@ -142,6 +142,10 @@ func (c *githubClient) mergePullRequest(ctx context.Context, repo string, number
 	return c.request(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, number), payload, nil)
 }
 
+func (c *githubClient) updateBranch(ctx context.Context, repo string, number int) error {
+	return c.request(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/pulls/%d/update-branch", repo, number), map[string]string{}, nil)
+}
+
 func (c *githubClient) request(ctx context.Context, method string, path string, payload any, target any) error {
 	var body io.Reader
 	if payload != nil {

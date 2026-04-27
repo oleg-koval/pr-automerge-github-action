@@ -90,12 +90,20 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	}
 
 	if isBehindBase(pr) {
-		if pr.User.Login == "dependabot[bot]" {
-			body := markerComment(pr, "dependabot-behind", cfg.DependabotRebaseComment)
+		if cfg.DryRun {
+			logger.Printf("dry run: would update branch for PR #%d", pr.Number)
+			return nil
+		}
+		if err := gh.updateBranch(ctx, repo, pr.Number); err != nil {
+			if pr.User.Login == "dependabot[bot]" {
+				body := markerComment(pr, "dependabot-behind", cfg.DependabotRebaseComment)
+				return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+			}
+			body := maintainerComment(cfg, pr, "branch-update-failed", "GitHub refused to update this maintenance bot PR with the base branch. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
 			return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 		}
-		body := maintainerComment(cfg, pr, "branch-behind", "This maintenance bot PR is behind the base branch and needs a rebase before it can satisfy branch protection.")
-		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+		logger.Printf("updated branch for PR #%d", pr.Number)
+		return nil
 	}
 
 	if pr.Mergeable == nil {

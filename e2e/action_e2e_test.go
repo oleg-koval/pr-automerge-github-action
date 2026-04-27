@@ -22,7 +22,9 @@ type fakeGitHub struct {
 	comments       []map[string]string
 	createdComment string
 	merged         bool
+	updatedBranch  bool
 	mergeStatus    int
+	updateStatus   int
 }
 
 func TestActionE2E(t *testing.T) {
@@ -40,8 +42,10 @@ func TestActionE2E(t *testing.T) {
 		legacyStatusCount   int
 		checkConclusion     string
 		mergeStatus         int
+		updateStatus        int
 		existingComments    []map[string]string
 		wantMerged          bool
+		wantUpdatedBranch   bool
 		wantCommentPart     string
 		wantNoComment       bool
 		wantMergeComment    bool
@@ -151,7 +155,20 @@ func TestActionE2E(t *testing.T) {
 			wantMergeComment:    true,
 		},
 		{
-			name:            "asks dependabot to rebase when behind base",
+			name:              "updates branch when behind base",
+			eventName:         "pull_request_target",
+			actor:             "dependabot[bot]",
+			mergeable:         &mergeable,
+			mergeableState:    "behind",
+			statusState:       "success",
+			checkConclusion:   "success",
+			mergeStatus:       http.StatusOK,
+			updateStatus:      http.StatusAccepted,
+			wantUpdatedBranch: true,
+			wantNoComment:     true,
+		},
+		{
+			name:            "asks dependabot to rebase when branch update fails",
 			eventName:       "pull_request_target",
 			actor:           "dependabot[bot]",
 			mergeable:       &mergeable,
@@ -159,6 +176,7 @@ func TestActionE2E(t *testing.T) {
 			statusState:     "success",
 			checkConclusion: "success",
 			mergeStatus:     http.StatusOK,
+			updateStatus:    http.StatusUnprocessableEntity,
 			wantCommentPart: "@dependabot rebase",
 		},
 		{
@@ -229,10 +247,11 @@ func TestActionE2E(t *testing.T) {
 					"user":            map[string]string{"login": tt.actor},
 					"head":            map[string]string{"sha": "abc123"},
 				},
-				status:      map[string]any{"state": tt.statusState, "statuses": statuses},
-				checkRuns:   map[string]any{"check_runs": checkRuns},
-				comments:    append([]map[string]string(nil), tt.existingComments...),
-				mergeStatus: tt.mergeStatus,
+				status:       map[string]any{"state": tt.statusState, "statuses": statuses},
+				checkRuns:    map[string]any{"check_runs": checkRuns},
+				comments:     append([]map[string]string(nil), tt.existingComments...),
+				mergeStatus:  tt.mergeStatus,
+				updateStatus: tt.updateStatus,
 			}
 			server := httptest.NewServer(fake.handler(t))
 			defer server.Close()
@@ -254,6 +273,9 @@ func TestActionE2E(t *testing.T) {
 			}
 			if tt.wantMerged != fake.merged {
 				t.Fatalf("merged = %v, want %v\nlogs:\n%s", fake.merged, tt.wantMerged, logs.String())
+			}
+			if tt.wantUpdatedBranch != fake.updatedBranch {
+				t.Fatalf("updatedBranch = %v, want %v\nlogs:\n%s", fake.updatedBranch, tt.wantUpdatedBranch, logs.String())
 			}
 			if tt.wantNoComment && fake.createdComment != "" {
 				t.Fatalf("created comment = %q, want none", fake.createdComment)
@@ -308,6 +330,18 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 			}
 			f.merged = true
 			writeJSON(t, w, map[string]bool{"merged": true})
+		case r.Method == http.MethodPut && r.URL.Path == "/repos/owner/repo/pulls/7/update-branch":
+			if f.updateStatus == 0 {
+				f.updateStatus = http.StatusAccepted
+			}
+			if f.updateStatus < 200 || f.updateStatus > 299 {
+				w.WriteHeader(f.updateStatus)
+				_, _ = fmt.Fprint(w, `{"message":"branch update failed"}`)
+				return
+			}
+			f.updatedBranch = true
+			w.WriteHeader(f.updateStatus)
+			writeJSON(t, w, map[string]string{"message": "Updating pull request branch."})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
