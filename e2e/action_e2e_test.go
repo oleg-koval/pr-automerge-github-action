@@ -170,7 +170,7 @@ func TestActionE2E(t *testing.T) {
 			statusState:     "success",
 			checkConclusion: "success",
 			mergeStatus:     http.StatusConflict,
-			wantCommentPart: "GitHub refused to merge this maintenance bot PR",
+			wantCommentPart: "Error:\n\n```\ngithub api PUT /repos/owner/repo/pulls/7/merge returned 409",
 		},
 		{
 			name:            "suppresses duplicate comments for same reason and head",

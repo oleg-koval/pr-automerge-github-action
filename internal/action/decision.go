@@ -113,7 +113,7 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return nil
 	}
 	if err := gh.mergePullRequest(ctx, repo, pr.Number, cfg.MergeMethod); err != nil {
-		body := maintainerComment(cfg, pr, "merge-failed", "GitHub refused to merge this maintenance bot PR. Please review it manually.\n\nError: "+err.Error())
+		body := maintainerComment(cfg, pr, "merge-failed", "GitHub refused to merge this maintenance bot PR. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 	logger.Printf("merged PR #%d with method %s", pr.Number, cfg.MergeMethod)
