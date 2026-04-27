@@ -152,7 +152,9 @@ func mergeConfig(base Config, override Config) Config {
 }
 
 func splitCSV(value string) []string {
-	parts := strings.Split(value, ",")
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t'
+	})
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
 		part = strings.TrimSpace(strings.TrimPrefix(part, "@"))

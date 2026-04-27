@@ -19,8 +19,8 @@ const (
 func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	env := newEnv(environ)
 	eventName := env.get("GITHUB_EVENT_NAME")
-	if eventName != "pull_request" && eventName != "pull_request_target" {
-		logger.Printf("not a PR event: %s", eventName)
+	if eventName != "pull_request" && eventName != "pull_request_target" && eventName != "pull_request_review" && eventName != "check_suite" {
+		logger.Printf("not a supported PR event: %s", eventName)
 		return nil
 	}
 
@@ -28,8 +28,9 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
-	if payload.PullRequest == nil {
-		logger.Printf("event has no pull_request payload")
+	eventPR := payload.pullRequest()
+	if eventPR == nil {
+		logger.Printf("event has no pull request payload")
 		return nil
 	}
 
@@ -45,20 +46,20 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return err
 	}
 
-	pr, err := gh.getPullRequestWithMergeability(ctx, repo, payload.PullRequest.Number)
+	pr, err := gh.getPullRequestWithMergeability(ctx, repo, eventPR.Number)
 	if err != nil {
 		return err
 	}
 	if pr.Number == 0 {
-		pr.Number = payload.PullRequest.Number
+		pr.Number = eventPR.Number
 	}
 	if pr.User.Login == "" {
-		pr.User.Login = payload.PullRequest.User.Login
+		pr.User.Login = eventPR.User.Login
 	}
 	if pr.Head.SHA == "" {
-		pr.Head.SHA = payload.PullRequest.Head.SHA
+		pr.Head.SHA = eventPR.Head.SHA
 	}
-	if pr.Draft || payload.PullRequest.Draft {
+	if pr.Draft || eventPR.Draft {
 		logger.Printf("skip draft PR #%d", pr.Number)
 		return nil
 	}

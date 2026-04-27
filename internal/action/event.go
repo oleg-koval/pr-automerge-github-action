@@ -8,7 +8,18 @@ import (
 
 type eventPayload struct {
 	PullRequest *eventPullRequest `json:"pull_request"`
+	CheckSuite  *eventCheckSuite  `json:"check_suite"`
 	Repository  eventRepository   `json:"repository"`
+}
+
+func (p eventPayload) pullRequest() *eventPullRequest {
+	if p.PullRequest != nil {
+		return p.PullRequest
+	}
+	if p.CheckSuite != nil && len(p.CheckSuite.PullRequests) > 0 {
+		return &p.CheckSuite.PullRequests[0]
+	}
+	return nil
 }
 
 type eventPullRequest struct {
@@ -16,6 +27,10 @@ type eventPullRequest struct {
 	Draft  bool      `json:"draft"`
 	User   eventUser `json:"user"`
 	Head   eventRef  `json:"head"`
+}
+
+type eventCheckSuite struct {
+	PullRequests []eventPullRequest `json:"pull_requests"`
 }
 
 type eventRepository struct {

@@ -52,6 +52,8 @@ func TestActionE2E(t *testing.T) {
 		includeCurrentRun   bool
 		includeOldAutomerge bool
 		wantNoAPIRequired   bool
+		eventHasCheckSuite  bool
+		botLoginsInput      string
 	}{
 		{
 			name:              "exits outside pull request events",
@@ -59,6 +61,32 @@ func TestActionE2E(t *testing.T) {
 			actor:             "dependabot[bot]",
 			wantNoComment:     true,
 			wantNoAPIRequired: true,
+		},
+		{
+			name:             "accepts newline separated bot logins",
+			eventName:        "pull_request_target",
+			actor:            "dependabot[bot]",
+			mergeable:        &mergeable,
+			mergeableState:   "clean",
+			statusState:      "success",
+			checkConclusion:  "success",
+			mergeStatus:      http.StatusOK,
+			botLoginsInput:   "dependabot[bot]\nrenovate[bot]\nsnyk-bot",
+			wantMerged:       true,
+			wantMergeComment: true,
+		},
+		{
+			name:               "merges from check suite pull request payload",
+			eventName:          "check_suite",
+			actor:              "dependabot[bot]",
+			mergeable:          &mergeable,
+			mergeableState:     "clean",
+			statusState:        "success",
+			checkConclusion:    "success",
+			mergeStatus:        http.StatusOK,
+			eventHasCheckSuite: true,
+			wantMerged:         true,
+			wantMergeComment:   true,
 		},
 		{
 			name:             "merges allowed bot when checks pass",
@@ -256,7 +284,11 @@ func TestActionE2E(t *testing.T) {
 			server := httptest.NewServer(fake.handler(t))
 			defer server.Close()
 
-			eventPath := writeEvent(t, tt.actor)
+			eventPath := writeEvent(t, tt.actor, tt.eventHasCheckSuite)
+			botLoginsInput := tt.botLoginsInput
+			if botLoginsInput == "" {
+				botLoginsInput = "dependabot[bot],renovate[bot],snyk-bot"
+			}
 			env := []string{
 				"GITHUB_EVENT_NAME=" + tt.eventName,
 				"GITHUB_EVENT_PATH=" + eventPath,
@@ -265,6 +297,7 @@ func TestActionE2E(t *testing.T) {
 				"GITHUB_TOKEN=test-token",
 				"GITHUB_RUN_ID=123456",
 				"INPUT_MAINTAINER_HANDLES=alice,bob",
+				"INPUT_BOT_LOGINS=" + botLoginsInput,
 			}
 			var logs strings.Builder
 			err := action.Run(context.Background(), env, log.New(&logs, "", 0))
@@ -348,17 +381,26 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 	}
 }
 
-func writeEvent(t *testing.T, actor string) string {
+func writeEvent(t *testing.T, actor string, checkSuite bool) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "event.json")
+	pullRequest := map[string]any{
+		"number": 7,
+		"draft":  false,
+		"user":   map[string]string{"login": actor},
+		"head":   map[string]string{"sha": "abc123"},
+	}
 	payload := map[string]any{
-		"repository": map[string]string{"full_name": "owner/repo"},
-		"pull_request": map[string]any{
-			"number": 7,
-			"draft":  false,
-			"user":   map[string]string{"login": actor},
-			"head":   map[string]string{"sha": "abc123"},
-		},
+		"repository":   map[string]string{"full_name": "owner/repo"},
+		"pull_request": pullRequest,
+	}
+	if checkSuite {
+		payload = map[string]any{
+			"repository": map[string]string{"full_name": "owner/repo"},
+			"check_suite": map[string]any{
+				"pull_requests": []map[string]any{pullRequest},
+			},
+		}
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
