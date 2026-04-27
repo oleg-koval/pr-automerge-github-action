@@ -39,6 +39,7 @@ jobs:
 | `config-path` | `.github/pr-bot-automerge.yml` | Optional YAML config path. |
 | `wait-timeout` | `30m` | Maximum time to wait for other checks before deciding. Set `0s` to fail fast. |
 | `wait-interval` | `30s` | Poll interval while waiting for checks. |
+| `ignored-check-names` | `automerge` | Comma-separated check run names ignored while deciding merge readiness. |
 | `dry-run` | `false` | Log intended comments and merges without writing. |
 
 ## Config file
@@ -57,6 +58,8 @@ merge_method: squash
 dependabot_rebase_comment: "@dependabot rebase"
 wait_timeout: 30m
 wait_interval: 30s
+ignored_check_names:
+  - automerge
 ```
 
 ## Behavior

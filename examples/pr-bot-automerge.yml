@@ -8,3 +8,5 @@ merge_method: squash
 dependabot_rebase_comment: "@dependabot rebase"
 wait_timeout: 30m
 wait_interval: 30s
+ignored_check_names:
+  - automerge

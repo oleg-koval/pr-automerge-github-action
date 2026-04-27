@@ -114,7 +114,7 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo string, sha string, currentRunID string, logger *log.Logger) (checkState, error) {
 	deadline := time.Now().Add(cfg.WaitTimeout)
 	for {
-		state, err := evaluateChecks(ctx, gh, repo, sha, currentRunID)
+		state, err := evaluateChecks(ctx, gh, repo, sha, currentRunID, cfg.IgnoredCheckNames)
 		if err != nil || state != checksPending || cfg.WaitTimeout == 0 || time.Now().After(deadline) {
 			return state, err
 		}
@@ -127,7 +127,7 @@ func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo strin
 	}
 }
 
-func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, currentRunID string) (checkState, error) {
+func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, currentRunID string, ignoredCheckNames []string) (checkState, error) {
 	status, err := gh.getCombinedStatus(ctx, repo, sha)
 	if err != nil && !isOptionalAPIError(err) {
 		return checksFailed, err
@@ -143,7 +143,7 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 		return checksFailed, nil
 	}
 	for _, run := range runs.CheckRuns {
-		if isCurrentRun(run, currentRunID) {
+		if isCurrentRun(run, currentRunID) || containsLogin(ignoredCheckNames, run.Name) {
 			continue
 		}
 		if run.Status != "completed" {

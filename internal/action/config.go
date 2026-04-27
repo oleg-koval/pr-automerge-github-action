@@ -19,6 +19,7 @@ type Config struct {
 	DependabotRebaseComment string        `yaml:"dependabot_rebase_comment"`
 	WaitTimeout             time.Duration `yaml:"wait_timeout"`
 	WaitInterval            time.Duration `yaml:"wait_interval"`
+	IgnoredCheckNames       []string      `yaml:"ignored_check_names"`
 	DryRun                  bool          `yaml:"dry_run"`
 }
 
@@ -31,6 +32,7 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 		DependabotRebaseComment: defaultDependabotRebaseComment,
 		WaitTimeout:             30 * time.Minute,
 		WaitInterval:            30 * time.Second,
+		IgnoredCheckNames:       []string{"automerge"},
 	}
 
 	configPath := valueOr(env.input("config-path"), ".github/pr-bot-automerge.yml")
@@ -65,6 +67,9 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 			return Config{}, fmt.Errorf("invalid wait-interval: %w", err)
 		}
 		cfg.WaitInterval = duration
+	}
+	if value := env.input("ignored-check-names"); value != "" {
+		cfg.IgnoredCheckNames = splitCSV(value)
 	}
 	if cfg.DependabotRebaseComment == "" {
 		cfg.DependabotRebaseComment = defaultDependabotRebaseComment
@@ -136,6 +141,9 @@ func mergeConfig(base Config, override Config) Config {
 	}
 	if override.WaitInterval != 0 {
 		base.WaitInterval = override.WaitInterval
+	}
+	if len(override.IgnoredCheckNames) > 0 {
+		base.IgnoredCheckNames = override.IgnoredCheckNames
 	}
 	if override.DryRun {
 		base.DryRun = true

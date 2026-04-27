@@ -23,6 +23,9 @@ inputs:
   wait-interval:
     description: Poll interval while waiting for checks. Use Go duration syntax, for example 30s.
     required: false
+  ignored-check-names:
+    description: Comma-separated check run names ignored while deciding merge readiness. Defaults to automerge.
+    required: false
   dry-run:
     description: Log intended actions without commenting or merging.
     required: false

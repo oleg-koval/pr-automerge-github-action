@@ -31,22 +31,23 @@ func TestActionE2E(t *testing.T) {
 	mergeable := true
 	conflicted := false
 	tests := []struct {
-		name              string
-		eventName         string
-		actor             string
-		mergeable         *bool
-		mergeableState    string
-		statusState       string
-		legacyStatusCount int
-		checkConclusion   string
-		mergeStatus       int
-		existingComments  []map[string]string
-		wantMerged        bool
-		wantCommentPart   string
-		wantNoComment     bool
-		wantMergeComment  bool
-		includeCurrentRun bool
-		wantNoAPIRequired bool
+		name                string
+		eventName           string
+		actor               string
+		mergeable           *bool
+		mergeableState      string
+		statusState         string
+		legacyStatusCount   int
+		checkConclusion     string
+		mergeStatus         int
+		existingComments    []map[string]string
+		wantMerged          bool
+		wantCommentPart     string
+		wantNoComment       bool
+		wantMergeComment    bool
+		includeCurrentRun   bool
+		includeOldAutomerge bool
+		wantNoAPIRequired   bool
 	}{
 		{
 			name:              "exits outside pull request events",
@@ -137,6 +138,19 @@ func TestActionE2E(t *testing.T) {
 			wantMergeComment:  true,
 		},
 		{
+			name:                "ignores previous automerge check runs",
+			eventName:           "pull_request_target",
+			actor:               "dependabot[bot]",
+			mergeable:           &mergeable,
+			mergeableState:      "clean",
+			statusState:         "success",
+			checkConclusion:     "success",
+			includeOldAutomerge: true,
+			mergeStatus:         http.StatusOK,
+			wantMerged:          true,
+			wantMergeComment:    true,
+		},
+		{
 			name:            "mentions maintainers when merge fails",
 			eventName:       "pull_request_target",
 			actor:           "dependabot[bot]",
@@ -179,6 +193,14 @@ func TestActionE2E(t *testing.T) {
 					"status":      "in_progress",
 					"conclusion":  nil,
 					"details_url": "https://github.com/owner/repo/actions/runs/123456/job/789",
+				})
+			}
+			if tt.includeOldAutomerge {
+				checkRuns = append(checkRuns, map[string]any{
+					"name":        "automerge",
+					"status":      "completed",
+					"conclusion":  "cancelled",
+					"details_url": "https://github.com/owner/repo/actions/runs/999999/job/789",
 				})
 			}
 
