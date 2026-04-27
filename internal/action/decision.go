@@ -89,6 +89,15 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 
+	if isBehindBase(pr) {
+		if pr.User.Login == "dependabot[bot]" {
+			body := markerComment(pr, "dependabot-behind", cfg.DependabotRebaseComment)
+			return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+		}
+		body := maintainerComment(cfg, pr, "branch-behind", "This maintenance bot PR is behind the base branch and needs a rebase before it can satisfy branch protection.")
+		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+	}
+
 	if pr.Mergeable == nil {
 		body := maintainerComment(cfg, pr, "unknown-mergeability", "GitHub did not report whether this maintenance bot PR is mergeable. Please review it manually.")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
@@ -186,6 +195,10 @@ func hasMergeConflict(pr pullRequest) bool {
 	default:
 		return false
 	}
+}
+
+func isBehindBase(pr pullRequest) bool {
+	return pr.MergeableState == "behind"
 }
 
 func containsLogin(logins []string, login string) bool {

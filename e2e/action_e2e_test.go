@@ -151,6 +151,17 @@ func TestActionE2E(t *testing.T) {
 			wantMergeComment:    true,
 		},
 		{
+			name:            "asks dependabot to rebase when behind base",
+			eventName:       "pull_request_target",
+			actor:           "dependabot[bot]",
+			mergeable:       &mergeable,
+			mergeableState:  "behind",
+			statusState:     "success",
+			checkConclusion: "success",
+			mergeStatus:     http.StatusOK,
+			wantCommentPart: "@dependabot rebase",
+		},
+		{
 			name:            "mentions maintainers when merge fails",
 			eventName:       "pull_request_target",
 			actor:           "dependabot[bot]",
