@@ -90,6 +90,11 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 
+	if isBlockedByChecks(pr) {
+		logger.Printf("PR #%d is blocked by branch protection (required checks may not have run yet); skipping until check_suite fires", pr.Number)
+		return nil
+	}
+
 	if isBehindBase(pr) {
 		if cfg.DryRun {
 			logger.Printf("dry run: would update branch for PR #%d", pr.Number)
@@ -160,10 +165,12 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 	if status.State == "failure" || status.State == "error" {
 		return checksFailed, nil
 	}
+	seenRuns := 0
 	for _, run := range runs.CheckRuns {
 		if isCurrentRun(run, currentRunID) || containsLogin(ignoredCheckNames, run.Name) {
 			continue
 		}
+		seenRuns++
 		if run.Status != "completed" {
 			return checksPending, nil
 		}
@@ -173,6 +180,10 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 		if !allowedConclusion(*run.Conclusion) {
 			return checksFailed, nil
 		}
+	}
+	// No non-excluded check runs yet — checks haven't started; treat as pending.
+	if seenRuns == 0 && len(status.Statuses) == 0 {
+		return checksPending, nil
 	}
 	return checksPassed, nil
 }
@@ -204,6 +215,10 @@ func hasMergeConflict(pr pullRequest) bool {
 	default:
 		return false
 	}
+}
+
+func isBlockedByChecks(pr pullRequest) bool {
+	return pr.MergeableState == "blocked"
 }
 
 func isBehindBase(pr pullRequest) bool {
