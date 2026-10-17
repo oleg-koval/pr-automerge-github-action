@@ -109,6 +109,14 @@ type pageInfo struct {
 	EndCursor   *string `json:"endCursor"`
 }
 
+func (c *githubClient) graphqlURL() string {
+	base := strings.TrimRight(c.baseURL, "/")
+	if strings.HasSuffix(base, "/api/v3") {
+		return strings.TrimSuffix(base, "/api/v3") + "/api/graphql"
+	}
+	return base + "/graphql"
+}
+
 func (c *githubClient) getPullRequest(ctx context.Context, repo string, number int) (pullRequest, error) {
 	var pr pullRequest
 	err := c.request(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d", repo, number), nil, &pr)
@@ -179,7 +187,7 @@ func (c *githubClient) hasOpenReviewComments(ctx context.Context, repo string, n
 			"after":  cursor,
 		}
 		var response reviewThreadsResponse
-		if err := c.request(ctx, http.MethodPost, "/graphql", map[string]any{"query": query, "variables": variables}, &response); err != nil {
+		if err := c.request(ctx, http.MethodPost, c.graphqlURL(), map[string]any{"query": query, "variables": variables}, &response); err != nil {
 			return false, err
 		}
 		if len(response.Errors) > 0 {
@@ -231,7 +239,11 @@ func (c *githubClient) request(ctx context.Context, method string, path string, 
 		}
 		body = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	endpoint := c.baseURL + path
+	if strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
+		endpoint = path
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return err
 	}
