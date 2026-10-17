@@ -9,11 +9,24 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
 var errNotFound = errors.New("not found")
+
+type githubRateLimitError struct {
+	resetAt time.Time
+	message string
+}
+
+func (e *githubRateLimitError) Error() string {
+	if e.message == "" {
+		return "github api rate limit exceeded"
+	}
+	return "github api rate limit exceeded: " + e.message
+}
 
 type githubClient struct {
 	baseURL string
@@ -191,7 +204,11 @@ func (c *githubClient) hasOpenReviewComments(ctx context.Context, repo string, n
 			return false, err
 		}
 		if len(response.Errors) > 0 {
-			return false, fmt.Errorf("github graphql: %s", response.Errors[0].Message)
+			message := response.Errors[0].Message
+			if strings.Contains(strings.ToLower(message), "rate limit") {
+				return false, &githubRateLimitError{message: message}
+			}
+			return false, fmt.Errorf("github graphql: %s", message)
 		}
 		if response.Data.Repository == nil || response.Data.Repository.PullRequest == nil || response.Data.Repository.PullRequest.ReviewThreads == nil {
 			return false, errors.New("github graphql: reviewThreads connection missing")
@@ -268,6 +285,15 @@ func (c *githubClient) request(ctx context.Context, method string, path string, 
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return errNotFound
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0") {
+		resetAt := time.Time{}
+		if resetUnix, parseErr := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); parseErr == nil {
+			resetAt = time.Unix(resetUnix, 0)
+		} else if retryAfter, parseErr := strconv.ParseInt(resp.Header.Get("Retry-After"), 10, 64); parseErr == nil {
+			resetAt = time.Now().Add(time.Duration(retryAfter) * time.Second)
+		}
+		return &githubRateLimitError{resetAt: resetAt, message: strings.TrimSpace(string(data))}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("github api %s %s returned %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))

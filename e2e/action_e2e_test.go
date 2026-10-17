@@ -11,12 +11,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oleg-koval/pr-automerge-github-action/internal/action"
 )
 
 type fakeGitHub struct {
 	pr                    map[string]any
+	prResponses           []map[string]any
+	prCalls               int
 	status                map[string]any
 	checkRuns             map[string]any
 	comments              []map[string]string
@@ -28,6 +31,7 @@ type fakeGitHub struct {
 	openReviewComments    bool
 	reviewThreadResponses []bool
 	reviewThreadCalls     int
+	reviewThreadCallTimes []time.Time
 }
 
 func TestActionE2E(t *testing.T) {
@@ -57,11 +61,13 @@ func TestActionE2E(t *testing.T) {
 		openReviewComments    bool
 		reviewThreadResponses []bool
 		wantReviewThreadCalls int
+		wantReviewInterval    time.Duration
 		wantNoAPIRequired     bool
 		eventHasCheckSuite    bool
 		botLoginsInput        string
 		waitTimeout           string
 		waitInterval          string
+		headChangesOnRefresh  bool
 	}{
 		{
 			name:              "exits outside pull request events",
@@ -212,12 +218,39 @@ func TestActionE2E(t *testing.T) {
 			checkConclusion:       "success",
 			mergeStatus:           http.StatusOK,
 			openReviewComments:    true,
-			reviewThreadResponses: []bool{true, false, false},
-			wantReviewThreadCalls: 3,
+			reviewThreadResponses: []bool{true, false, false, false},
+			wantReviewThreadCalls: 4,
+			wantReviewInterval:    900 * time.Millisecond,
 			wantMerged:            true,
 			wantMergeComment:      true,
-			waitTimeout:           "50ms",
-			waitInterval:          "1ms",
+			waitTimeout:           "5s",
+			waitInterval:          "1s",
+		},
+		{
+			name:                 "skips when head changes before merge",
+			eventName:            "pull_request_target",
+			actor:                "dependabot[bot]",
+			mergeable:            &mergeable,
+			mergeableState:       "clean",
+			statusState:          "success",
+			checkConclusion:      "success",
+			mergeStatus:          http.StatusOK,
+			headChangesOnRefresh: true,
+			wantMergeComment:     true,
+		},
+		{
+			name:               "skips after review retry timeout",
+			eventName:          "pull_request_target",
+			actor:              "dependabot[bot]",
+			mergeable:          &mergeable,
+			mergeableState:     "clean",
+			statusState:        "success",
+			checkConclusion:    "success",
+			mergeStatus:        http.StatusOK,
+			openReviewComments: true,
+			waitTimeout:        "10ms",
+			waitInterval:       "1ms",
+			wantNoComment:      true,
 		},
 		{
 			name:              "updates branch when behind base",
@@ -320,6 +353,15 @@ func TestActionE2E(t *testing.T) {
 				mergeStatus:           tt.mergeStatus,
 				updateStatus:          tt.updateStatus,
 			}
+			fake.prResponses = []map[string]any{fake.pr}
+			if tt.headChangesOnRefresh {
+				refreshedPR := make(map[string]any, len(fake.pr))
+				for key, value := range fake.pr {
+					refreshedPR[key] = value
+				}
+				refreshedPR["head"] = map[string]string{"sha": "def456"}
+				fake.prResponses = append(fake.prResponses, refreshedPR)
+			}
 			server := httptest.NewServer(fake.handler(t))
 			defer server.Close()
 
@@ -369,6 +411,14 @@ func TestActionE2E(t *testing.T) {
 			if tt.wantReviewThreadCalls > 0 && fake.reviewThreadCalls != tt.wantReviewThreadCalls {
 				t.Fatalf("reviewThreadCalls = %d, want %d", fake.reviewThreadCalls, tt.wantReviewThreadCalls)
 			}
+			if tt.wantReviewInterval > 0 {
+				if len(fake.reviewThreadCallTimes) < 2 {
+					t.Fatalf("reviewThreadCallTimes = %d, want at least 2 calls", len(fake.reviewThreadCallTimes))
+				}
+				if elapsed := fake.reviewThreadCallTimes[1].Sub(fake.reviewThreadCallTimes[0]); elapsed < tt.wantReviewInterval {
+					t.Fatalf("review retry elapsed = %s, want at least %s", elapsed, tt.wantReviewInterval)
+				}
+			}
 		})
 	}
 }
@@ -381,7 +431,12 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/contents/.github/pr-bot-automerge.yml":
 			http.NotFound(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls/7":
-			writeJSON(t, w, f.pr)
+			responseIndex := f.prCalls
+			if responseIndex >= len(f.prResponses) {
+				responseIndex = len(f.prResponses) - 1
+			}
+			f.prCalls++
+			writeJSON(t, w, f.prResponses[responseIndex])
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/commits/abc123/status":
 			writeJSON(t, w, f.status)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/commits/abc123/check-runs":
@@ -400,6 +455,7 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 			}
 			openReviewComments := f.openReviewComments
 			if len(f.reviewThreadResponses) > 0 {
+				f.reviewThreadCallTimes = append(f.reviewThreadCallTimes, time.Now())
 				responseIndex := f.reviewThreadCalls
 				if responseIndex >= len(f.reviewThreadResponses) {
 					responseIndex = len(f.reviewThreadResponses) - 1
