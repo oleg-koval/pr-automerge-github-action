@@ -360,6 +360,15 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/7/comments":
 			writeJSON(t, w, f.comments)
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			var payload struct {
+				Query string `json:"query"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode GraphQL payload: %v", err)
+			}
+			if !strings.Contains(payload.Query, "reviewThreads") {
+				t.Fatalf("GraphQL query omitted reviewThreads: %q", payload.Query)
+			}
 			if f.openReviewComments {
 				writeJSON(t, w, map[string]any{
 					"data": map[string]any{
