@@ -117,13 +117,13 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 
-	openReviewComments, err := gh.hasOpenReviewComments(ctx, repo, pr.Number)
+	openReviewComments, err := waitForReviewComments(ctx, gh, cfg, repo, pr.Number, logger)
 	if err != nil {
 		body := maintainerComment(cfg, pr, "review-comments-unknown", "GitHub did not report whether this maintenance bot PR has open review comments, so automerge refused to merge it. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 	if openReviewComments {
-		logger.Printf("skip PR #%d because it has open review comments", pr.Number)
+		logger.Printf("skip PR #%d because it still has open review comments after waiting %s", pr.Number, cfg.WaitTimeout)
 		return nil
 	}
 
@@ -155,6 +155,23 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	}
 	logger.Printf("merged PR #%d with method %s", pr.Number, cfg.MergeMethod)
 	return nil
+}
+
+func waitForReviewComments(ctx context.Context, gh *githubClient, cfg Config, repo string, number int, logger *log.Logger) (bool, error) {
+	deadline := time.Now().Add(cfg.WaitTimeout)
+	for {
+		open, err := gh.hasOpenReviewComments(ctx, repo, number)
+		if err != nil || !open || cfg.WaitTimeout == 0 || time.Now().After(deadline) {
+			return open, err
+		}
+
+		logger.Printf("review comments open for PR #%d; waiting %s before retrying", number, cfg.WaitInterval)
+		select {
+		case <-ctx.Done():
+			return true, ctx.Err()
+		case <-time.After(cfg.WaitInterval):
+		}
+	}
 }
 
 func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo string, sha string, currentRunID string, logger *log.Logger) (checkState, error) {
