@@ -2,6 +2,7 @@ package action
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -117,13 +118,13 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 
-	openReviewComments, err := gh.hasOpenReviewComments(ctx, repo, pr.Number)
+	openReviewComments, err := waitForReviewComments(ctx, gh, cfg, repo, pr.Number, logger)
 	if err != nil {
 		body := maintainerComment(cfg, pr, "review-comments-unknown", "GitHub did not report whether this maintenance bot PR has open review comments, so automerge refused to merge it. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 	if openReviewComments {
-		logger.Printf("skip PR #%d because it has open review comments", pr.Number)
+		logger.Printf("skip PR #%d because it still has open review comments after waiting %s", pr.Number, cfg.WaitTimeout)
 		return nil
 	}
 
@@ -132,16 +133,40 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return err
 	}
 
-	// Re-read immediately before the merge request. The earlier check can become stale
-	// while the approval comment is being posted; branch protection should also require
+	// Re-read before the merge request. The earlier check can become stale while the
+	// approval comment is being posted; branch protection should also require
 	// conversation resolution for an atomic server-side merge boundary.
+	openReviewComments, err = waitForReviewComments(ctx, gh, cfg, repo, pr.Number, logger)
+	if err != nil {
+		body := maintainerComment(cfg, pr, "review-comments-unknown-before-merge", "GitHub did not report whether this maintenance bot PR still has open review comments immediately before merge, so automerge refused to merge it. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
+		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+	}
+	if openReviewComments {
+		logger.Printf("skip PR #%d because review comments remain open before merge", pr.Number)
+		return nil
+	}
+
+	latestPR, err := gh.getPullRequestWithMergeability(ctx, repo, pr.Number)
+	if err != nil {
+		return err
+	}
+	if latestPR.Head.SHA != pr.Head.SHA {
+		logger.Printf("skip PR #%d because its head changed from %s to %s while it was being checked", pr.Number, pr.Head.SHA, latestPR.Head.SHA)
+		return nil
+	}
+	if latestPR.Mergeable == nil || !*latestPR.Mergeable || hasMergeConflict(latestPR) || isBlockedByChecks(latestPR) || isBehindBase(latestPR) {
+		logger.Printf("skip PR #%d because its refreshed merge state is no longer safe: mergeable=%v state=%s", pr.Number, latestPR.Mergeable, latestPR.MergeableState)
+		return nil
+	}
+
+	// Keep one final review-thread read immediately before the merge request.
 	openReviewComments, err = gh.hasOpenReviewComments(ctx, repo, pr.Number)
 	if err != nil {
 		body := maintainerComment(cfg, pr, "review-comments-unknown-before-merge", "GitHub did not report whether this maintenance bot PR still has open review comments immediately before merge, so automerge refused to merge it. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 	if openReviewComments {
-		logger.Printf("skip PR #%d because review comments opened before merge", pr.Number)
+		logger.Printf("skip PR #%d because review comments opened after the final retry", pr.Number)
 		return nil
 	}
 
@@ -155,6 +180,85 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	}
 	logger.Printf("merged PR #%d with method %s", pr.Number, cfg.MergeMethod)
 	return nil
+}
+
+const (
+	minReviewPollInterval = time.Second
+	maxReviewPollInterval = 5 * time.Minute
+)
+
+func waitForReviewComments(ctx context.Context, gh *githubClient, cfg Config, repo string, number int, logger *log.Logger) (bool, error) {
+	if cfg.WaitTimeout == 0 {
+		return gh.hasOpenReviewComments(ctx, repo, number)
+	}
+
+	deadline := time.Now().Add(cfg.WaitTimeout)
+	pollInterval := cfg.WaitInterval
+	if pollInterval < minReviewPollInterval {
+		pollInterval = minReviewPollInterval
+	}
+	for {
+		if !time.Now().Before(deadline) {
+			return true, nil
+		}
+
+		open, err := gh.hasOpenReviewComments(ctx, repo, number)
+		if err != nil {
+			var rateLimitErr *githubRateLimitError
+			if !errors.As(err, &rateLimitErr) {
+				return false, err
+			}
+			wait := pollInterval
+			if !rateLimitErr.resetAt.IsZero() {
+				wait = time.Until(rateLimitErr.resetAt)
+			}
+			if wait <= 0 {
+				wait = pollInterval
+			}
+			if remaining := time.Until(deadline); wait > remaining {
+				logger.Printf("review-thread lookup rate-limited for PR #%d beyond wait-timeout; skipping", number)
+				return true, nil
+			}
+			logger.Printf("review-thread lookup rate-limited for PR #%d; waiting %s before retrying", number, wait)
+			if err := waitForReviewRetry(ctx, wait); err != nil {
+				return true, err
+			}
+			continue
+		}
+		if !time.Now().Before(deadline) {
+			return true, nil
+		}
+		if !open {
+			return false, nil
+		}
+
+		remaining := time.Until(deadline)
+		wait := pollInterval
+		if wait > remaining {
+			wait = remaining
+		}
+		logger.Printf("review comments open for PR #%d; waiting %s before retrying", number, wait)
+		if err := waitForReviewRetry(ctx, wait); err != nil {
+			return true, err
+		}
+		if pollInterval < maxReviewPollInterval {
+			pollInterval *= 2
+			if pollInterval > maxReviewPollInterval {
+				pollInterval = maxReviewPollInterval
+			}
+		}
+	}
+}
+
+func waitForReviewRetry(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo string, sha string, currentRunID string, logger *log.Logger) (checkState, error) {

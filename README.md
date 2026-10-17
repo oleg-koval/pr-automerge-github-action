@@ -37,8 +37,8 @@ jobs:
 | `maintainer-handles` | required | Comma-separated GitHub handles to mention for manual action. |
 | `merge-method` | `squash` | One of `merge`, `squash`, or `rebase`. |
 | `config-path` | `.github/pr-bot-automerge.yml` | Optional YAML config path. |
-| `wait-timeout` | `30m` | Maximum time to wait for other checks before deciding. Set `0s` to fail fast. |
-| `wait-interval` | `30s` | Poll interval while waiting for checks. |
+| `wait-timeout` | `30m` | Maximum time to wait for pending checks and open review threads before deciding. Set `0s` to fail fast. |
+| `wait-interval` | `30s` | Initial poll interval while waiting for checks or open review threads; it backs off up to five minutes. |
 | `ignored-check-names` | `automerge` | Comma-separated check run names ignored while deciding merge readiness. |
 | `dry-run` | `false` | Log intended comments and merges without writing. |
 
@@ -64,7 +64,7 @@ ignored_check_names:
 
 ## Behavior
 
-The action exits successfully outside PR events. It ignores PRs not opened by allowed bot logins and ignores draft PRs. It waits for pending checks by default, syncs behind PR branches with the target branch, then merges only when checks and statuses are successful, GitHub reports the PR as mergeable, and every review thread read by GraphQL is resolved. The action checks review threads both before its approval comment and immediately before the merge request. Enable GitHub branch protection's required conversation resolution on protected target branches as the atomic server-side merge boundary; the action cannot make a REST merge request and a concurrent new comment one transaction. If the automerge job lives in the same workflow as validation jobs, make it depend on those jobs with `needs`; if validation lives in separate workflows, the built-in wait loop handles it.
+The action exits successfully outside PR events. It ignores PRs not opened by allowed bot logins and ignores draft PRs. It waits for pending checks by default, syncs behind PR branches with the target branch, then merges only when checks and statuses are successful, GitHub reports the PR as mergeable, and every review thread read by GraphQL is resolved. When review threads are open, the action re-checks them at `wait-interval` until they resolve or `wait-timeout` expires; review-thread polling is clamped to at least one second and backs off up to five minutes; set `wait-timeout: 0s` to fail fast. The action checks review threads both before its approval comment and immediately before the merge request. Enable GitHub branch protection's required conversation resolution on protected target branches as the atomic server-side merge boundary; the action cannot make a REST merge request and a concurrent new comment one transaction. If the automerge job lives in the same workflow as validation jobs, make it depend on those jobs with `needs`; if validation lives in separate workflows, the built-in wait loop handles it.
 
 If checks fail, the action treats the update as potentially breaking and mentions maintainers. If a Dependabot PR has a merge conflict, it comments `@dependabot rebase`. If another bot PR has a conflict, it mentions maintainers. Before merging, it comments what it is doing with attribution to this action and a small celebration GIF. Duplicate comments for the same PR head SHA and reason are suppressed.
 
