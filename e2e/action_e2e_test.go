@@ -16,15 +16,16 @@ import (
 )
 
 type fakeGitHub struct {
-	pr             map[string]any
-	status         map[string]any
-	checkRuns      map[string]any
-	comments       []map[string]string
-	createdComment string
-	merged         bool
-	updatedBranch  bool
-	mergeStatus    int
-	updateStatus   int
+	pr                 map[string]any
+	status             map[string]any
+	checkRuns          map[string]any
+	comments           []map[string]string
+	createdComment     string
+	merged             bool
+	updatedBranch      bool
+	mergeStatus        int
+	updateStatus       int
+	openReviewComments bool
 }
 
 func TestActionE2E(t *testing.T) {
@@ -51,6 +52,7 @@ func TestActionE2E(t *testing.T) {
 		wantMergeComment    bool
 		includeCurrentRun   bool
 		includeOldAutomerge bool
+		openReviewComments  bool
 		wantNoAPIRequired   bool
 		eventHasCheckSuite  bool
 		botLoginsInput      string
@@ -183,6 +185,18 @@ func TestActionE2E(t *testing.T) {
 			wantMergeComment:    true,
 		},
 		{
+			name:               "does not merge with open review comments",
+			eventName:          "pull_request_target",
+			actor:              "dependabot[bot]",
+			mergeable:          &mergeable,
+			mergeableState:     "clean",
+			statusState:        "success",
+			checkConclusion:    "success",
+			mergeStatus:        http.StatusOK,
+			openReviewComments: true,
+			wantNoComment:      true,
+		},
+		{
 			name:              "updates branch when behind base",
 			eventName:         "pull_request_target",
 			actor:             "dependabot[bot]",
@@ -275,11 +289,12 @@ func TestActionE2E(t *testing.T) {
 					"user":            map[string]string{"login": tt.actor},
 					"head":            map[string]string{"sha": "abc123"},
 				},
-				status:       map[string]any{"state": tt.statusState, "statuses": statuses},
-				checkRuns:    map[string]any{"check_runs": checkRuns},
-				comments:     append([]map[string]string(nil), tt.existingComments...),
-				mergeStatus:  tt.mergeStatus,
-				updateStatus: tt.updateStatus,
+				status:             map[string]any{"state": tt.statusState, "statuses": statuses},
+				checkRuns:          map[string]any{"check_runs": checkRuns},
+				openReviewComments: tt.openReviewComments,
+				comments:           append([]map[string]string(nil), tt.existingComments...),
+				mergeStatus:        tt.mergeStatus,
+				updateStatus:       tt.updateStatus,
 			}
 			server := httptest.NewServer(fake.handler(t))
 			defer server.Close()
@@ -344,6 +359,43 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 			writeJSON(t, w, f.checkRuns)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/7/comments":
 			writeJSON(t, w, f.comments)
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			var payload struct {
+				Query string `json:"query"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode GraphQL payload: %v", err)
+			}
+			if !strings.Contains(payload.Query, "reviewThreads") {
+				t.Fatalf("GraphQL query omitted reviewThreads: %q", payload.Query)
+			}
+			if f.openReviewComments {
+				writeJSON(t, w, map[string]any{
+					"data": map[string]any{
+						"repository": map[string]any{
+							"pullRequest": map[string]any{
+								"reviewThreads": map[string]any{
+									"nodes":    []map[string]bool{{"isResolved": false}},
+									"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil},
+								},
+							},
+						},
+					},
+				})
+				return
+			}
+			writeJSON(t, w, map[string]any{
+				"data": map[string]any{
+					"repository": map[string]any{
+						"pullRequest": map[string]any{
+							"reviewThreads": map[string]any{
+								"nodes":    []map[string]bool{{"isResolved": true}},
+								"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil},
+							},
+						},
+					},
+				},
+			})
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/7/comments":
 			var payload map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

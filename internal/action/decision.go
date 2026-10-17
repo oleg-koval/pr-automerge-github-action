@@ -117,9 +117,32 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 
+	openReviewComments, err := gh.hasOpenReviewComments(ctx, repo, pr.Number)
+	if err != nil {
+		body := maintainerComment(cfg, pr, "review-comments-unknown", "GitHub did not report whether this maintenance bot PR has open review comments, so automerge refused to merge it. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
+		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+	}
+	if openReviewComments {
+		logger.Printf("skip PR #%d because it has open review comments", pr.Number)
+		return nil
+	}
+
 	body := mergeApprovedComment(pr, cfg.MergeMethod)
 	if err := postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger); err != nil {
 		return err
+	}
+
+	// Re-read immediately before the merge request. The earlier check can become stale
+	// while the approval comment is being posted; branch protection should also require
+	// conversation resolution for an atomic server-side merge boundary.
+	openReviewComments, err = gh.hasOpenReviewComments(ctx, repo, pr.Number)
+	if err != nil {
+		body := maintainerComment(cfg, pr, "review-comments-unknown-before-merge", "GitHub did not report whether this maintenance bot PR still has open review comments immediately before merge, so automerge refused to merge it. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
+		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+	}
+	if openReviewComments {
+		logger.Printf("skip PR #%d because review comments opened before merge", pr.Number)
+		return nil
 	}
 
 	if cfg.DryRun {

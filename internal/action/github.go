@@ -78,6 +78,45 @@ type issueComment struct {
 	Body string `json:"body"`
 }
 
+type reviewThreadsResponse struct {
+	Data struct {
+		Repository *reviewRepository `json:"repository"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type reviewRepository struct {
+	PullRequest *reviewPullRequest `json:"pullRequest"`
+}
+
+type reviewPullRequest struct {
+	ReviewThreads *reviewThreadConnection `json:"reviewThreads"`
+}
+
+type reviewThreadConnection struct {
+	Nodes    []reviewThread `json:"nodes"`
+	PageInfo *pageInfo      `json:"pageInfo"`
+}
+
+type reviewThread struct {
+	IsResolved bool `json:"isResolved"`
+}
+
+type pageInfo struct {
+	HasNextPage bool    `json:"hasNextPage"`
+	EndCursor   *string `json:"endCursor"`
+}
+
+func (c *githubClient) graphqlURL() string {
+	base := strings.TrimRight(c.baseURL, "/")
+	if strings.HasSuffix(base, "/api/v3") {
+		return strings.TrimSuffix(base, "/api/v3") + "/api/graphql"
+	}
+	return base + "/graphql"
+}
+
 func (c *githubClient) getPullRequest(ctx context.Context, repo string, number int) (pullRequest, error) {
 	var pr pullRequest
 	err := c.request(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d", repo, number), nil, &pr)
@@ -132,6 +171,51 @@ func (c *githubClient) listComments(ctx context.Context, repo string, number int
 	return comments, err
 }
 
+func (c *githubClient) hasOpenReviewComments(ctx context.Context, repo string, number int) (bool, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return false, fmt.Errorf("repository must be owner/name, got %q", repo)
+	}
+
+	const query = `query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){nodes{isResolved}pageInfo{hasNextPage,endCursor}}}}}`
+	var cursor *string
+	for {
+		variables := map[string]any{
+			"owner":  owner,
+			"name":   name,
+			"number": number,
+			"after":  cursor,
+		}
+		var response reviewThreadsResponse
+		if err := c.request(ctx, http.MethodPost, c.graphqlURL(), map[string]any{"query": query, "variables": variables}, &response); err != nil {
+			return false, err
+		}
+		if len(response.Errors) > 0 {
+			return false, fmt.Errorf("github graphql: %s", response.Errors[0].Message)
+		}
+		if response.Data.Repository == nil || response.Data.Repository.PullRequest == nil || response.Data.Repository.PullRequest.ReviewThreads == nil {
+			return false, errors.New("github graphql: reviewThreads connection missing")
+		}
+		connection := response.Data.Repository.PullRequest.ReviewThreads
+		if connection.PageInfo == nil {
+			return false, errors.New("github graphql: reviewThreads pageInfo missing")
+		}
+		for _, thread := range connection.Nodes {
+			if !thread.IsResolved {
+				return true, nil
+			}
+		}
+		page := connection.PageInfo
+		if !page.HasNextPage {
+			return false, nil
+		}
+		if page.EndCursor == nil || *page.EndCursor == "" {
+			return false, errors.New("github graphql: reviewThreads pageInfo hasNextPage without endCursor")
+		}
+		cursor = page.EndCursor
+	}
+}
+
 func (c *githubClient) createComment(ctx context.Context, repo string, number int, body string) error {
 	payload := map[string]string{"body": body}
 	return c.request(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number), payload, nil)
@@ -155,7 +239,11 @@ func (c *githubClient) request(ctx context.Context, method string, path string, 
 		}
 		body = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	endpoint := c.baseURL + path
+	if strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
+		endpoint = path
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return err
 	}
