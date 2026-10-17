@@ -70,6 +70,7 @@ func TestActionE2E(t *testing.T) {
 		headChangesOnRefresh      bool
 		prState                   string
 		prClosesAfterMergeFailure bool
+		prNumber                  string
 	}{
 		{
 			name:              "exits outside pull request events",
@@ -88,6 +89,19 @@ func TestActionE2E(t *testing.T) {
 			checkConclusion:  "success",
 			mergeStatus:      http.StatusOK,
 			botLoginsInput:   "dependabot[bot]\nrenovate[bot]\nsnyk-bot",
+			wantMerged:       true,
+			wantMergeComment: true,
+		},
+		{
+			name:             "re-evaluates scheduled PR retry",
+			eventName:        "schedule",
+			prNumber:         "7",
+			actor:            "dependabot[bot]",
+			mergeable:        &mergeable,
+			mergeableState:   "clean",
+			statusState:      "success",
+			checkConclusion:  "success",
+			mergeStatus:      http.StatusOK,
 			wantMerged:       true,
 			wantMergeComment: true,
 		},
@@ -416,6 +430,7 @@ func TestActionE2E(t *testing.T) {
 				"INPUT_BOT_LOGINS=" + botLoginsInput,
 				"INPUT_WAIT_TIMEOUT=" + valueOrTest(tt.waitTimeout, "0s"),
 				"INPUT_WAIT_INTERVAL=" + valueOrTest(tt.waitInterval, "1ms"),
+				"INPUT_PR_NUMBER=" + tt.prNumber,
 			}
 			var logs strings.Builder
 			err := action.Run(context.Background(), env, log.New(&logs, "", 0))

@@ -7,6 +7,14 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Pull request number to re-evaluate
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -16,11 +24,52 @@ permissions:
   issues: write
 
 concurrency:
-  group: automerge-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || github.run_id }}
+  group: automerge-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || inputs.pr-number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
+  discover:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.pr-number == '')
+    runs-on: ubuntu-latest
+    outputs:
+      pr-numbers: ${{ steps.list.outputs.pr-numbers }}
+    steps:
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prs="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number --jq '[.[].number]')"
+          printf 'pr-numbers=%s\n' "$prs" >> "$GITHUB_OUTPUT"
+
+  retry:
+    needs: discover
+    if: needs.discover.result == 'success' && needs.discover.outputs.pr-numbers != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pr-number: ${{ fromJSON(needs.discover.outputs.pr-numbers) }}
+    steps:
+      - uses: oleg-koval/pr-automerge-github-action@v1
+        with:
+          github-token: ${{ github.token }}
+          maintainer-handles: oleg-koval
+          merge-method: squash
+          pr-number: ${{ matrix.pr-number }}
+
+  manual:
+    if: github.event_name == 'workflow_dispatch' && inputs.pr-number != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: oleg-koval/pr-automerge-github-action@v1
+        with:
+          github-token: ${{ github.token }}
+          maintainer-handles: oleg-koval
+          merge-method: squash
+          pr-number: ${{ inputs.pr-number }}
+
   automerge:
+    if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: oleg-koval/pr-automerge-github-action@v1

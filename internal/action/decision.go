@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,19 +21,31 @@ const (
 func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	env := newEnv(environ)
 	eventName := env.get("GITHUB_EVENT_NAME")
-	if eventName != "pull_request" && eventName != "pull_request_target" && eventName != "pull_request_review" && eventName != "pull_request_review_comment" && eventName != "check_suite" {
+	syntheticEvent := eventName == "schedule" || eventName == "workflow_dispatch"
+	if !syntheticEvent && eventName != "pull_request" && eventName != "pull_request_target" && eventName != "pull_request_review" && eventName != "pull_request_review_comment" && eventName != "check_suite" {
 		logger.Printf("not a supported PR event: %s", eventName)
 		return nil
 	}
 
-	payload, err := loadEvent(env.get("GITHUB_EVENT_PATH"))
-	if err != nil {
-		return err
-	}
-	eventPR := payload.pullRequest()
-	if eventPR == nil {
-		logger.Printf("event has no pull request payload")
-		return nil
+	var payload eventPayload
+	var eventPR *eventPullRequest
+	var err error
+	if syntheticEvent {
+		number, parseErr := strconv.Atoi(strings.TrimSpace(env.input("pr-number")))
+		if parseErr != nil || number <= 0 {
+			return fmt.Errorf("pr-number input is required for %s events", eventName)
+		}
+		eventPR = &eventPullRequest{Number: number}
+	} else {
+		payload, err = loadEvent(env.get("GITHUB_EVENT_PATH"))
+		if err != nil {
+			return err
+		}
+		eventPR = payload.pullRequest()
+		if eventPR == nil {
+			logger.Printf("event has no pull request payload")
+			return nil
+		}
 	}
 
 	repo := valueOr(payload.Repository.FullName, env.get("GITHUB_REPOSITORY"))
