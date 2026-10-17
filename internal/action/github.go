@@ -47,6 +47,7 @@ func newGitHubClient(baseURL string, token string) *githubClient {
 
 type pullRequest struct {
 	Number         int    `json:"number"`
+	State          string `json:"state"`
 	Draft          bool   `json:"draft"`
 	Mergeable      *bool  `json:"mergeable"`
 	MergeableState string `json:"mergeable_state"`
