@@ -20,7 +20,7 @@ const (
 func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	env := newEnv(environ)
 	eventName := env.get("GITHUB_EVENT_NAME")
-	if eventName != "pull_request" && eventName != "pull_request_target" && eventName != "pull_request_review" && eventName != "check_suite" {
+	if eventName != "pull_request" && eventName != "pull_request_target" && eventName != "pull_request_review" && eventName != "pull_request_review_comment" && eventName != "check_suite" {
 		logger.Printf("not a supported PR event: %s", eventName)
 		return nil
 	}
