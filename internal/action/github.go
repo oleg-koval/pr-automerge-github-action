@@ -80,18 +80,24 @@ type issueComment struct {
 
 type reviewThreadsResponse struct {
 	Data struct {
-		Repository struct {
-			PullRequest struct {
-				ReviewThreads struct {
-					Nodes    []reviewThread `json:"nodes"`
-					PageInfo pageInfo       `json:"pageInfo"`
-				} `json:"reviewThreads"`
-			} `json:"pullRequest"`
-		} `json:"repository"`
+		Repository *reviewRepository `json:"repository"`
 	} `json:"data"`
 	Errors []struct {
 		Message string `json:"message"`
 	} `json:"errors"`
+}
+
+type reviewRepository struct {
+	PullRequest *reviewPullRequest `json:"pullRequest"`
+}
+
+type reviewPullRequest struct {
+	ReviewThreads *reviewThreadConnection `json:"reviewThreads"`
+}
+
+type reviewThreadConnection struct {
+	Nodes    []reviewThread `json:"nodes"`
+	PageInfo *pageInfo      `json:"pageInfo"`
 }
 
 type reviewThread struct {
@@ -99,8 +105,8 @@ type reviewThread struct {
 }
 
 type pageInfo struct {
-	HasNextPage bool   `json:"hasNextPage"`
-	EndCursor   string `json:"endCursor"`
+	HasNextPage bool    `json:"hasNextPage"`
+	EndCursor   *string `json:"endCursor"`
 }
 
 func (c *githubClient) getPullRequest(ctx context.Context, repo string, number int) (pullRequest, error) {
@@ -179,16 +185,26 @@ func (c *githubClient) hasOpenReviewComments(ctx context.Context, repo string, n
 		if len(response.Errors) > 0 {
 			return false, fmt.Errorf("github graphql: %s", response.Errors[0].Message)
 		}
-		for _, thread := range response.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		if response.Data.Repository == nil || response.Data.Repository.PullRequest == nil || response.Data.Repository.PullRequest.ReviewThreads == nil {
+			return false, errors.New("github graphql: reviewThreads connection missing")
+		}
+		connection := response.Data.Repository.PullRequest.ReviewThreads
+		if connection.PageInfo == nil {
+			return false, errors.New("github graphql: reviewThreads pageInfo missing")
+		}
+		for _, thread := range connection.Nodes {
 			if !thread.IsResolved {
 				return true, nil
 			}
 		}
-		page := response.Data.Repository.PullRequest.ReviewThreads.PageInfo
-		if !page.HasNextPage || page.EndCursor == "" {
+		page := connection.PageInfo
+		if !page.HasNextPage {
 			return false, nil
 		}
-		cursor = &page.EndCursor
+		if page.EndCursor == nil || *page.EndCursor == "" {
+			return false, errors.New("github graphql: reviewThreads pageInfo hasNextPage without endCursor")
+		}
+		cursor = page.EndCursor
 	}
 }
 
