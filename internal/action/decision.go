@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,19 +21,31 @@ const (
 func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	env := newEnv(environ)
 	eventName := env.get("GITHUB_EVENT_NAME")
-	if eventName != "pull_request" && eventName != "pull_request_target" && eventName != "pull_request_review" && eventName != "check_suite" {
+	syntheticEvent := eventName == "schedule" || eventName == "workflow_dispatch"
+	if !syntheticEvent && eventName != "pull_request" && eventName != "pull_request_target" && eventName != "pull_request_review" && eventName != "pull_request_review_comment" && eventName != "check_suite" {
 		logger.Printf("not a supported PR event: %s", eventName)
 		return nil
 	}
 
-	payload, err := loadEvent(env.get("GITHUB_EVENT_PATH"))
-	if err != nil {
-		return err
-	}
-	eventPR := payload.pullRequest()
-	if eventPR == nil {
-		logger.Printf("event has no pull request payload")
-		return nil
+	var payload eventPayload
+	var eventPR *eventPullRequest
+	var err error
+	if syntheticEvent {
+		number, parseErr := strconv.Atoi(strings.TrimSpace(env.input("pr-number")))
+		if parseErr != nil || number <= 0 {
+			return fmt.Errorf("pr-number input is required for %s events", eventName)
+		}
+		eventPR = &eventPullRequest{Number: number}
+	} else {
+		payload, err = loadEvent(env.get("GITHUB_EVENT_PATH"))
+		if err != nil {
+			return err
+		}
+		eventPR = payload.pullRequest()
+		if eventPR == nil {
+			logger.Printf("event has no pull request payload")
+			return nil
+		}
 	}
 
 	repo := valueOr(payload.Repository.FullName, env.get("GITHUB_REPOSITORY"))
@@ -59,6 +72,10 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	}
 	if pr.Head.SHA == "" {
 		pr.Head.SHA = eventPR.Head.SHA
+	}
+	if pr.State != "" && pr.State != "open" {
+		logger.Printf("skip PR #%d because it is %s", pr.Number, pr.State)
+		return nil
 	}
 	if pr.Draft || eventPR.Draft {
 		logger.Printf("skip draft PR #%d", pr.Number)
@@ -175,6 +192,11 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return nil
 	}
 	if err := gh.mergePullRequest(ctx, repo, pr.Number, cfg.MergeMethod); err != nil {
+		latestPR, stateErr := gh.getPullRequest(ctx, repo, pr.Number)
+		if stateErr == nil && latestPR.State != "open" {
+			logger.Printf("PR #%d is already closed after a concurrent merge; treating merge as successful", pr.Number)
+			return nil
+		}
 		body := maintainerComment(cfg, pr, "merge-failed", "GitHub refused to merge this maintenance bot PR. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}

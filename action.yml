@@ -17,6 +17,9 @@ inputs:
   config-path:
     description: Repository config path.
     required: false
+  pr-number:
+    description: Pull request number for scheduled or manually dispatched retries.
+    required: false
   wait-timeout:
     description: Maximum time to wait for pending checks and open review threads before deciding. Use Go duration syntax, for example 30m or 0s.
     required: false

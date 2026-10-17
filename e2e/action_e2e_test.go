@@ -40,34 +40,37 @@ func TestActionE2E(t *testing.T) {
 	mergeable := true
 	conflicted := false
 	tests := []struct {
-		name                  string
-		eventName             string
-		actor                 string
-		mergeable             *bool
-		mergeableState        string
-		statusState           string
-		legacyStatusCount     int
-		checkConclusion       string
-		mergeStatus           int
-		updateStatus          int
-		existingComments      []map[string]string
-		wantMerged            bool
-		wantUpdatedBranch     bool
-		wantCommentPart       string
-		wantNoComment         bool
-		wantMergeComment      bool
-		includeCurrentRun     bool
-		includeOldAutomerge   bool
-		openReviewComments    bool
-		reviewThreadResponses []bool
-		wantReviewThreadCalls int
-		wantReviewInterval    time.Duration
-		wantNoAPIRequired     bool
-		eventHasCheckSuite    bool
-		botLoginsInput        string
-		waitTimeout           string
-		waitInterval          string
-		headChangesOnRefresh  bool
+		name                      string
+		eventName                 string
+		actor                     string
+		mergeable                 *bool
+		mergeableState            string
+		statusState               string
+		legacyStatusCount         int
+		checkConclusion           string
+		mergeStatus               int
+		updateStatus              int
+		existingComments          []map[string]string
+		wantMerged                bool
+		wantUpdatedBranch         bool
+		wantCommentPart           string
+		wantNoComment             bool
+		wantMergeComment          bool
+		includeCurrentRun         bool
+		includeOldAutomerge       bool
+		openReviewComments        bool
+		reviewThreadResponses     []bool
+		wantReviewThreadCalls     int
+		wantReviewInterval        time.Duration
+		wantNoAPIRequired         bool
+		eventHasCheckSuite        bool
+		botLoginsInput            string
+		waitTimeout               string
+		waitInterval              string
+		headChangesOnRefresh      bool
+		prState                   string
+		prClosesAfterMergeFailure bool
+		prNumber                  string
 	}{
 		{
 			name:              "exits outside pull request events",
@@ -86,6 +89,19 @@ func TestActionE2E(t *testing.T) {
 			checkConclusion:  "success",
 			mergeStatus:      http.StatusOK,
 			botLoginsInput:   "dependabot[bot]\nrenovate[bot]\nsnyk-bot",
+			wantMerged:       true,
+			wantMergeComment: true,
+		},
+		{
+			name:             "re-evaluates scheduled PR retry",
+			eventName:        "schedule",
+			prNumber:         "7",
+			actor:            "dependabot[bot]",
+			mergeable:        &mergeable,
+			mergeableState:   "clean",
+			statusState:      "success",
+			checkConclusion:  "success",
+			mergeStatus:      http.StatusOK,
 			wantMerged:       true,
 			wantMergeComment: true,
 		},
@@ -209,6 +225,18 @@ func TestActionE2E(t *testing.T) {
 			wantNoComment:      true,
 		},
 		{
+			name:            "skips closed pull requests",
+			eventName:       "pull_request_review",
+			actor:           "dependabot[bot]",
+			mergeable:       &mergeable,
+			mergeableState:  "clean",
+			statusState:     "success",
+			checkConclusion: "success",
+			mergeStatus:     http.StatusOK,
+			prState:         "closed",
+			wantNoComment:   true,
+		},
+		{
 			name:                  "retries open review comments until resolved",
 			eventName:             "pull_request_target",
 			actor:                 "dependabot[bot]",
@@ -289,6 +317,18 @@ func TestActionE2E(t *testing.T) {
 			wantCommentPart: "Error:\n\n```\ngithub api PUT /repos/owner/repo/pulls/7/merge returned 409",
 		},
 		{
+			name:                      "treats concurrent merge as success",
+			eventName:                 "pull_request_review",
+			actor:                     "dependabot[bot]",
+			mergeable:                 &mergeable,
+			mergeableState:            "clean",
+			statusState:               "success",
+			checkConclusion:           "success",
+			mergeStatus:               http.StatusMethodNotAllowed,
+			prClosesAfterMergeFailure: true,
+			wantMergeComment:          true,
+		},
+		{
 			name:            "suppresses duplicate comments for same reason and head",
 			eventName:       "pull_request_target",
 			actor:           "dependabot[bot]",
@@ -339,6 +379,7 @@ func TestActionE2E(t *testing.T) {
 			fake := &fakeGitHub{
 				pr: map[string]any{
 					"number":          7,
+					"state":           valueOrTest(tt.prState, "open"),
 					"draft":           false,
 					"mergeable":       tt.mergeable,
 					"mergeable_state": tt.mergeableState,
@@ -362,6 +403,14 @@ func TestActionE2E(t *testing.T) {
 				refreshedPR["head"] = map[string]string{"sha": "def456"}
 				fake.prResponses = append(fake.prResponses, refreshedPR)
 			}
+			if tt.prClosesAfterMergeFailure {
+				closedPR := make(map[string]any, len(fake.pr))
+				for key, value := range fake.pr {
+					closedPR[key] = value
+				}
+				closedPR["state"] = "closed"
+				fake.prResponses = append(fake.prResponses, fake.pr, closedPR)
+			}
 			server := httptest.NewServer(fake.handler(t))
 			defer server.Close()
 
@@ -381,6 +430,7 @@ func TestActionE2E(t *testing.T) {
 				"INPUT_BOT_LOGINS=" + botLoginsInput,
 				"INPUT_WAIT_TIMEOUT=" + valueOrTest(tt.waitTimeout, "0s"),
 				"INPUT_WAIT_INTERVAL=" + valueOrTest(tt.waitInterval, "1ms"),
+				"INPUT_PR_NUMBER=" + tt.prNumber,
 			}
 			var logs strings.Builder
 			err := action.Run(context.Background(), env, log.New(&logs, "", 0))
