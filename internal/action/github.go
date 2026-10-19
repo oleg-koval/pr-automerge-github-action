@@ -16,6 +16,12 @@ import (
 
 var errNotFound = errors.New("not found")
 
+const (
+	statusPageSize        = 100
+	checkRunPageSize      = 10
+	maxGitHubResponseSize = 8 << 20
+)
+
 type githubRateLimitError struct {
 	resetAt time.Time
 	message string
@@ -74,8 +80,9 @@ type combinedStatus struct {
 }
 
 type commitStatus struct {
-	Context string `json:"context"`
-	State   string `json:"state"`
+	Context   string    `json:"context"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type checkRunsResponse struct {
@@ -84,6 +91,7 @@ type checkRunsResponse struct {
 }
 
 type checkRun struct {
+	ID         int64   `json:"id"`
 	Name       string  `json:"name"`
 	Status     string  `json:"status"`
 	Conclusion *string `json:"conclusion"`
@@ -173,17 +181,25 @@ func (c *githubClient) getCombinedStatus(ctx context.Context, repo string, sha s
 	var combined combinedStatus
 	for page := 1; ; page++ {
 		var current combinedStatus
-		path := fmt.Sprintf("/repos/%s/commits/%s/status?per_page=100&page=%d", repo, sha, page)
+		path := fmt.Sprintf("/repos/%s/commits/%s/status?per_page=%d&page=%d", repo, sha, statusPageSize, page)
 		if err := c.request(ctx, http.MethodGet, path, nil, &current); err != nil {
 			return combinedStatus{}, err
 		}
 		if page == 1 {
 			combined.State = current.State
 			combined.TotalCount = current.TotalCount
+		} else if current.TotalCount != combined.TotalCount {
+			return combinedStatus{}, fmt.Errorf("commit statuses changed during pagination: total_count was %d and is now %d", combined.TotalCount, current.TotalCount)
 		}
 		combined.Statuses = append(combined.Statuses, current.Statuses...)
-		if len(current.Statuses) == 0 || len(combined.Statuses) >= combined.TotalCount {
+		if len(combined.Statuses) > combined.TotalCount {
+			return combinedStatus{}, fmt.Errorf("commit status pagination returned %d records for total_count %d", len(combined.Statuses), combined.TotalCount)
+		}
+		if len(combined.Statuses) == combined.TotalCount {
 			return combined, nil
+		}
+		if len(current.Statuses) == 0 {
+			return combinedStatus{}, fmt.Errorf("commit status pagination stopped at %d of %d records", len(combined.Statuses), combined.TotalCount)
 		}
 	}
 }
@@ -192,16 +208,24 @@ func (c *githubClient) getCheckRuns(ctx context.Context, repo string, sha string
 	var combined checkRunsResponse
 	for page := 1; ; page++ {
 		var current checkRunsResponse
-		path := fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=100&page=%d", repo, sha, page)
+		path := fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=%d&page=%d", repo, sha, checkRunPageSize, page)
 		if err := c.request(ctx, http.MethodGet, path, nil, &current); err != nil {
 			return checkRunsResponse{}, err
 		}
 		if page == 1 {
 			combined.TotalCount = current.TotalCount
+		} else if current.TotalCount != combined.TotalCount {
+			return checkRunsResponse{}, fmt.Errorf("check runs changed during pagination: total_count was %d and is now %d", combined.TotalCount, current.TotalCount)
 		}
 		combined.CheckRuns = append(combined.CheckRuns, current.CheckRuns...)
-		if len(current.CheckRuns) == 0 || len(combined.CheckRuns) >= combined.TotalCount {
+		if len(combined.CheckRuns) > combined.TotalCount {
+			return checkRunsResponse{}, fmt.Errorf("check run pagination returned %d records for total_count %d", len(combined.CheckRuns), combined.TotalCount)
+		}
+		if len(combined.CheckRuns) == combined.TotalCount {
 			return combined, nil
+		}
+		if len(current.CheckRuns) == 0 {
+			return checkRunsResponse{}, fmt.Errorf("check run pagination stopped at %d of %d records", len(combined.CheckRuns), combined.TotalCount)
 		}
 	}
 }
@@ -307,9 +331,12 @@ func (c *githubClient) request(ctx context.Context, method string, path string, 
 	defer func() {
 		_ = resp.Body.Close()
 	}()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxGitHubResponseSize+1))
 	if err != nil {
 		return err
+	}
+	if len(data) > maxGitHubResponseSize {
+		return fmt.Errorf("github api response exceeded %d bytes", maxGitHubResponseSize)
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return errNotFound

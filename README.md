@@ -4,40 +4,7 @@ Automerge pull requests opened by configured maintenance bots. The action is PR-
 
 ## Usage
 
-```yaml
-name: Bot automerge
-
-on:
-  pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, edited]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
-  check_suite:
-    types: [completed]
-
-permissions: {}
-
-concurrency:
-  group: automerge-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || github.run_id }}
-  cancel-in-progress: false
-
-jobs:
-  automerge:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      checks: read
-      statuses: read
-      issues: write
-    steps:
-      - uses: oleg-koval/pr-automerge-github-action@v1
-        with:
-          github-token: ${{ github.token }}
-          maintainer-handles: oleg-koval,octocat
-```
+Copy the complete, security-scoped workflow from [`examples/workflow.yml`](examples/workflow.yml) to `.github/workflows/automerge.yml`. It fans out one job per PR (including each PR associated with a `check_suite` event), serializes runs per PR, and pins the action to the immutable v1.5.0 commit SHA. Update `maintainer-handles` for your repository.
 
 ## Inputs
 
@@ -48,7 +15,7 @@ jobs:
 | `maintainer-handles` | required | Comma-separated GitHub handles to mention for manual action. |
 | `merge-method` | `squash` | One of `merge`, `squash`, or `rebase`. |
 | `config-path` | `.github/pr-bot-automerge.yml` | Optional YAML config path. |
-| `pr-number` | unset | Pull request number for scheduled or manually dispatched retries. |
+| `pr-number` | unset | Pull request for a per-PR matrix run or a scheduled/manual retry; webhook events require it to be associated with that event. |
 | `wait-timeout` | `30m` | Maximum time to wait for pending checks and open review threads before deciding. Set `0s` to fail fast. |
 | `wait-interval` | `30s` | Initial poll interval while waiting for checks or open review threads; it backs off up to five minutes. |
 | `ignored-check-names` | `automerge` | Comma-separated check run names ignored while deciding merge readiness. |
@@ -82,7 +49,7 @@ GitHub Actions has no `pull_request_review_thread` trigger, so the example workf
 
 ## Security and branch protection
 
-`pull_request_target` runs with the base repository's token and secrets. Never check out the PR head, execute PR-controlled scripts, or invoke other code supplied by the PR in this privileged workflow. Keep the bot allowlist narrow and grant write permissions only to the automerge job. Protect target branches with required status checks and required conversation resolution: API checks reduce risk, but GitHub branch protection is the server-side merge boundary for races between a check and the merge request. In production, pin the action to a reviewed full commit SHA; `@v1` in this example is a readability placeholder, not an immutable pin.
+`pull_request_target` runs with the base repository's token and secrets. Never check out the PR head, execute PR-controlled scripts, or invoke other code supplied by the PR in this privileged workflow. Keep the bot allowlist narrow and grant write permissions only to the automerge job. Protect target branches with required status checks and required conversation resolution: API checks reduce risk, but GitHub branch protection is the server-side merge boundary for races between a check and the merge request. The example pins the action to the reviewed v1.5.0 commit SHA; update that full SHA only after reviewing a release.
 
 If checks fail, the action treats the update as potentially breaking and mentions maintainers. If a Dependabot PR has a merge conflict, it comments `@dependabot rebase`. If another bot PR has a conflict, it mentions maintainers. Before merging, it comments what it is doing with attribution to this action and a small celebration GIF. Duplicate comments for the same PR head SHA and reason are suppressed.
 

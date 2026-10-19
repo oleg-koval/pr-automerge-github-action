@@ -30,17 +30,34 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	var payload eventPayload
 	var eventPRs []eventPullRequest
 	var err error
-	if syntheticEvent {
-		number, parseErr := strconv.Atoi(strings.TrimSpace(env.input("pr-number")))
-		if parseErr != nil || number <= 0 {
-			return fmt.Errorf("pr-number input is required for %s events", eventName)
-		}
-		eventPRs = []eventPullRequest{{Number: number}}
-	} else {
+	requestedPRNumber := strings.TrimSpace(env.input("pr-number"))
+	if !syntheticEvent {
 		payload, err = loadEvent(env.get("GITHUB_EVENT_PATH"))
 		if err != nil {
 			return err
 		}
+	}
+	if requestedPRNumber != "" {
+		number, parseErr := strconv.Atoi(requestedPRNumber)
+		if parseErr != nil || number <= 0 {
+			return fmt.Errorf("pr-number input must be a positive integer, got %q", requestedPRNumber)
+		}
+		if !syntheticEvent {
+			associated := false
+			for _, pr := range payload.pullRequests() {
+				if pr.Number == number {
+					associated = true
+					break
+				}
+			}
+			if !associated {
+				return fmt.Errorf("pr-number %d is not associated with the %s event", number, eventName)
+			}
+		}
+		eventPRs = []eventPullRequest{{Number: number}}
+	} else if syntheticEvent {
+		return fmt.Errorf("pr-number input is required for %s events", eventName)
+	} else {
 		eventPRs = payload.pullRequests()
 		if len(eventPRs) == 0 {
 			logger.Printf("event has no pull request payload")
@@ -318,39 +335,53 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 	if err != nil && !isOptionalAPIError(err) {
 		return checksFailed, err
 	}
-	if status.State == "pending" && len(status.Statuses) > 0 {
-		return checksPending, nil
-	}
-	if status.State == "failure" || status.State == "error" {
+	if len(status.Statuses) == 0 && (status.State == "failure" || status.State == "error") {
 		return checksFailed, nil
 	}
+	latestStatuses := make(map[string]commitStatus, len(status.Statuses))
 	for _, commit := range status.Statuses {
+		latest, exists := latestStatuses[commit.Context]
+		if !exists || commit.CreatedAt.After(latest.CreatedAt) {
+			latestStatuses[commit.Context] = commit
+		}
+	}
+	statusesPending := false
+	for _, commit := range latestStatuses {
 		switch commit.State {
 		case "success":
 		case "pending":
-			return checksPending, nil
+			statusesPending = true
 		default:
 			return checksFailed, nil
 		}
 	}
-	seenRuns := 0
+	if statusesPending {
+		return checksPending, nil
+	}
+	latestRuns := make(map[string]checkRun, len(runs.CheckRuns))
 	for _, run := range runs.CheckRuns {
 		if isCurrentRun(run, currentRunID) || containsLogin(ignoredCheckNames, run.Name) {
 			continue
 		}
-		seenRuns++
-		if run.Status != "completed" {
-			return checksPending, nil
+		latest, exists := latestRuns[run.Name]
+		if !exists || run.ID > latest.ID {
+			latestRuns[run.Name] = run
 		}
-		if run.Conclusion == nil {
-			return checksPending, nil
+	}
+	if len(latestRuns) == 0 && len(status.Statuses) == 0 {
+		return checksPending, nil
+	}
+	runsPending := false
+	for _, run := range latestRuns {
+		if run.Status != "completed" || run.Conclusion == nil {
+			runsPending = true
+			continue
 		}
 		if !allowedConclusion(*run.Conclusion) {
 			return checksFailed, nil
 		}
 	}
-	// No non-excluded check runs yet — checks haven't started; treat as pending.
-	if seenRuns == 0 && len(status.Statuses) == 0 {
+	if runsPending {
 		return checksPending, nil
 	}
 	return checksPassed, nil

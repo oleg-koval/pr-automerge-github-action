@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,6 +28,7 @@ type fakeGitHub struct {
 	createdComment        string
 	merged                bool
 	mergeCalls            int
+	mergePRNumbers        []int
 	updatedBranch         bool
 	mergeStatus           int
 	updateStatus          int
@@ -68,6 +70,8 @@ func TestActionE2E(t *testing.T) {
 		eventHasCheckSuite        bool
 		eventPRNumbers            []int
 		wantMergeCalls            int
+		wantMergedPRNumbers       []int
+		wantError                 string
 		botLoginsInput            string
 		waitTimeout               string
 		waitInterval              string
@@ -123,19 +127,46 @@ func TestActionE2E(t *testing.T) {
 			wantMergeComment:   true,
 		},
 		{
-			name:               "merges every PR from check suite payload",
+			name:                "merges every PR from check suite payload",
+			eventName:           "check_suite",
+			actor:               "dependabot[bot]",
+			mergeable:           &mergeable,
+			mergeableState:      "clean",
+			statusState:         "success",
+			checkConclusion:     "success",
+			mergeStatus:         http.StatusOK,
+			eventHasCheckSuite:  true,
+			eventPRNumbers:      []int{7, 8},
+			wantMerged:          true,
+			wantMergeCalls:      2,
+			wantMergedPRNumbers: []int{7, 8},
+			wantMergeComment:    true,
+		},
+		{
+			name:                "processes selected check suite PR from matrix input",
+			eventName:           "check_suite",
+			actor:               "dependabot[bot]",
+			mergeable:           &mergeable,
+			mergeableState:      "clean",
+			statusState:         "success",
+			checkConclusion:     "success",
+			mergeStatus:         http.StatusOK,
+			eventHasCheckSuite:  true,
+			eventPRNumbers:      []int{7, 8},
+			prNumber:            "8",
+			wantMerged:          true,
+			wantMergeCalls:      1,
+			wantMergedPRNumbers: []int{8},
+			wantMergeComment:    true,
+		},
+		{
+			name:               "rejects a PR not associated with the check suite",
 			eventName:          "check_suite",
 			actor:              "dependabot[bot]",
-			mergeable:          &mergeable,
-			mergeableState:     "clean",
-			statusState:        "success",
-			checkConclusion:    "success",
-			mergeStatus:        http.StatusOK,
 			eventHasCheckSuite: true,
-			eventPRNumbers:     []int{7, 8},
-			wantMerged:         true,
-			wantMergeCalls:     2,
-			wantMergeComment:   true,
+			eventPRNumbers:     []int{7},
+			prNumber:           "8",
+			wantError:          "not associated with the check_suite event",
 		},
 		{
 			name:             "merges allowed bot when checks pass",
@@ -405,8 +436,8 @@ func TestActionE2E(t *testing.T) {
 					"user":            map[string]string{"login": tt.actor},
 					"head":            map[string]string{"sha": "abc123"},
 				},
-				status:                map[string]any{"state": tt.statusState, "statuses": statuses},
-				checkRuns:             map[string]any{"check_runs": checkRuns},
+				status:                map[string]any{"state": tt.statusState, "total_count": len(statuses), "statuses": statuses},
+				checkRuns:             map[string]any{"total_count": len(checkRuns), "check_runs": checkRuns},
 				openReviewComments:    tt.openReviewComments,
 				reviewThreadResponses: append([]bool(nil), tt.reviewThreadResponses...),
 				comments:              append([]map[string]string(nil), tt.existingComments...),
@@ -453,6 +484,12 @@ func TestActionE2E(t *testing.T) {
 			}
 			var logs strings.Builder
 			err := action.Run(context.Background(), env, log.New(&logs, "", 0))
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("Run() error = %v, want error containing %q", err, tt.wantError)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Run() error = %v\nlogs:\n%s", err, logs.String())
 			}
@@ -462,6 +499,9 @@ func TestActionE2E(t *testing.T) {
 			if tt.wantMergeCalls != 0 && fake.mergeCalls != tt.wantMergeCalls {
 				t.Fatalf("merge calls = %d, want %d", fake.mergeCalls, tt.wantMergeCalls)
 
+			}
+			if tt.wantMergedPRNumbers != nil && !slices.Equal(fake.mergePRNumbers, tt.wantMergedPRNumbers) {
+				t.Fatalf("merged PR numbers = %v, want %v", fake.mergePRNumbers, tt.wantMergedPRNumbers)
 			}
 			if tt.wantUpdatedBranch != fake.updatedBranch {
 				t.Fatalf("updatedBranch = %v, want %v\nlogs:\n%s", fake.updatedBranch, tt.wantUpdatedBranch, logs.String())
@@ -582,6 +622,11 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 			writeJSON(t, w, map[string]string{"body": f.createdComment})
 		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/") && strings.HasSuffix(r.URL.Path, "/merge"):
 			f.mergeCalls++
+			prNumber, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/pulls/"), "/merge"))
+			if err != nil {
+				t.Fatalf("parse merge PR number from %q: %v", r.URL.Path, err)
+			}
+			f.mergePRNumbers = append(f.mergePRNumbers, prNumber)
 			if f.mergeStatus == 0 {
 				f.mergeStatus = http.StatusOK
 			}
