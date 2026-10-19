@@ -184,6 +184,22 @@ func TestEvaluateChecksDoesNotCollapseDifferentProducers(t *testing.T) {
 
 func stringPointer(value string) *string { return &value }
 
+func TestIsIgnoredCheckRequiresExactName(t *testing.T) {
+	for _, tt := range []struct {
+		ignored []string
+		name    string
+		want    bool
+	}{
+		{ignored: []string{"automerge (42)"}, name: "automerge (42)", want: true},
+		{ignored: []string{"automerge"}, name: "automerge (42)", want: false},
+		{ignored: []string{"automerge (42)"}, name: "Automerge (42)", want: false},
+	} {
+		if got := isIgnoredCheck(tt.ignored, tt.name); got != tt.want {
+			t.Errorf("isIgnoredCheck(%v, %q) = %v, want %v", tt.ignored, tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestIsCurrentRunRequiresCompleteRunIDSegment(t *testing.T) {
 	for _, tt := range []struct {
 		url  string

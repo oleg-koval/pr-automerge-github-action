@@ -455,7 +455,12 @@ func isCurrentRun(run checkRun, currentRunID string) bool {
 }
 
 func isIgnoredCheck(ignored []string, name string) bool {
-	return containsLogin(ignored, name)
+	for _, ignoredName := range ignored {
+		if ignoredName == name {
+			return true
+		}
+	}
+	return false
 }
 
 func allowedConclusion(conclusion string) bool {
