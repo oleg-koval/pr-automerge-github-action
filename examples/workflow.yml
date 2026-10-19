@@ -84,7 +84,7 @@ jobs:
       group: automerge-${{ matrix.pr-number }}
       cancel-in-progress: false
     steps:
-      - uses: oleg-koval/pr-automerge-github-action@9db0964b1617865850037df0198d4788d886b79a # reviewed automerge check provenance
+      - uses: oleg-koval/pr-automerge-github-action@4c592bb974fcda43281fc6e1e0b59ca4c3d5f4c0 # reviewed final safety gates
         with:
           github-token: ${{ github.token }}
           maintainer-handles: oleg-koval,octocat
