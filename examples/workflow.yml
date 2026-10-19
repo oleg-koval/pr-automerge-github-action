@@ -7,29 +7,23 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  check_suite:
+    types: [completed]
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
     inputs:
       pr-number:
-        description: Pull request number to re-evaluate
+        description: Pull request number to re-evaluate (blank retries all open PRs)
         required: false
         type: string
 
-permissions:
-  contents: write
-  pull-requests: write
-  checks: read
-  statuses: read
-  issues: write
-
-concurrency:
-  group: automerge-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || inputs.pr-number || github.run_id }}
-  cancel-in-progress: false
+permissions: {}
 
 jobs:
   discover:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.pr-number == '')
+    permissions:
+      pull-requests: read
     runs-on: ubuntu-latest
     outputs:
       pr-numbers: ${{ steps.list.outputs.pr-numbers }}
@@ -37,40 +31,63 @@ jobs:
       - id: list
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_PR_NUMBER: ${{ inputs.pr-number || '' }}
         run: |
-          prs="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number --jq '[.[].number]')"
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            schedule)
+              prs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" --jq '.[].number' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+              ;;
+            workflow_dispatch)
+              if [[ -n "$REQUESTED_PR_NUMBER" ]]; then
+                if [[ ! "$REQUESTED_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+                  echo "Invalid pull request number: $REQUESTED_PR_NUMBER" >&2
+                  exit 1
+                fi
+                prs="[$REQUESTED_PR_NUMBER]"
+              else
+                prs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" --jq '.[].number' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+              fi
+              ;;
+            check_suite)
+              prs="$(jq -c '[.check_suite.pull_requests[]?.number | select(type == "number")] | unique' "$GITHUB_EVENT_PATH")"
+              ;;
+            *)
+              prs="$(jq -c '[.pull_request.number | select(type == "number")]' "$GITHUB_EVENT_PATH")"
+              ;;
+          esac
+          count="$(jq 'length' <<<"$prs")"
+          if (( count > 255 )); then
+            echo "Found $count pull requests, exceeding the 255-entry matrix budget plus the discover job (GitHub's 256-job workflow limit); refusing to silently skip retries." >&2
+            exit 1
+          fi
           printf 'pr-numbers=%s\n' "$prs" >> "$GITHUB_OUTPUT"
+        shell: bash
 
-  retry:
+  automerge:
     needs: discover
     if: needs.discover.result == 'success' && needs.discover.outputs.pr-numbers != '[]'
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+      checks: read
+      statuses: read
+      issues: write
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         pr-number: ${{ fromJSON(needs.discover.outputs.pr-numbers) }}
+    concurrency:
+      group: automerge-${{ matrix.pr-number }}
+      cancel-in-progress: false
     steps:
-      - uses: oleg-koval/pr-automerge-github-action@v1
+      - uses: oleg-koval/pr-automerge-github-action@72ae8a454d6a02be4ba53a6f1b05a10cb62d880b # workflow provenance and paginated checks
         with:
           github-token: ${{ github.token }}
           maintainer-handles: oleg-koval,octocat
+          ignored-check-names: automerge,automerge (${{ matrix.pr-number }})
+          automerge-workflow-path: .github/workflows/automerge.yml
           pr-number: ${{ matrix.pr-number }}
-
-  manual:
-    if: github.event_name == 'workflow_dispatch' && inputs.pr-number != ''
-    runs-on: ubuntu-latest
-    steps:
-      - uses: oleg-koval/pr-automerge-github-action@v1
-        with:
-          github-token: ${{ github.token }}
-          maintainer-handles: oleg-koval,octocat
-          pr-number: ${{ inputs.pr-number }}
-
-  automerge:
-    if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: oleg-koval/pr-automerge-github-action@v1
-        with:
-          github-token: ${{ github.token }}
-          maintainer-handles: oleg-koval,octocat

@@ -18,7 +18,7 @@ inputs:
     description: Repository config path.
     required: false
   pr-number:
-    description: Pull request number for scheduled or manually dispatched retries.
+    description: Pull request number for a per-PR matrix run or a scheduled/manual retry. For webhook events, it must be associated with that event.
     required: false
   wait-timeout:
     description: Maximum time to wait for pending checks and open review threads before deciding. Use Go duration syntax, for example 30m or 0s.
@@ -27,7 +27,10 @@ inputs:
     description: Initial poll interval while waiting for checks or open review threads; review-thread polling is clamped to one second and backs off up to five minutes. Use Go duration syntax, for example 30s.
     required: false
   ignored-check-names:
-    description: Comma-separated check run names ignored while deciding merge readiness. Defaults to automerge.
+    description: Comma-separated exact check run names eligible for ignoring only when the workflow-run path, repository, head SHA and check suite are verified. Defaults to automerge.
+    required: false
+  automerge-workflow-path:
+    description: Expected repository-relative `.github/workflows/*.yml` path for this automerge workflow. Required to ignore its own check runs; a matching pending check without this path fails immediately with a configuration error.
     required: false
   dry-run:
     description: Log intended actions without commenting or merging.

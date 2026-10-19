@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -28,21 +29,38 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	}
 
 	var payload eventPayload
-	var eventPR *eventPullRequest
+	var eventPRs []eventPullRequest
 	var err error
-	if syntheticEvent {
-		number, parseErr := strconv.Atoi(strings.TrimSpace(env.input("pr-number")))
-		if parseErr != nil || number <= 0 {
-			return fmt.Errorf("pr-number input is required for %s events", eventName)
-		}
-		eventPR = &eventPullRequest{Number: number}
-	} else {
+	requestedPRNumber := strings.TrimSpace(env.input("pr-number"))
+	if !syntheticEvent {
 		payload, err = loadEvent(env.get("GITHUB_EVENT_PATH"))
 		if err != nil {
 			return err
 		}
-		eventPR = payload.pullRequest()
-		if eventPR == nil {
+	}
+	if requestedPRNumber != "" {
+		number, parseErr := strconv.Atoi(requestedPRNumber)
+		if parseErr != nil || number <= 0 {
+			return fmt.Errorf("pr-number input must be a positive integer, got %q", requestedPRNumber)
+		}
+		if !syntheticEvent {
+			associated := false
+			for _, pr := range payload.pullRequests() {
+				if pr.Number == number {
+					associated = true
+					break
+				}
+			}
+			if !associated {
+				return fmt.Errorf("pr-number %d is not associated with the %s event", number, eventName)
+			}
+		}
+		eventPRs = []eventPullRequest{{Number: number}}
+	} else if syntheticEvent {
+		return fmt.Errorf("pr-number input is required for %s events", eventName)
+	} else {
+		eventPRs = payload.pullRequests()
+		if len(eventPRs) == 0 {
 			logger.Printf("event has no pull request payload")
 			return nil
 		}
@@ -60,6 +78,16 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return err
 	}
 
+	var processErrors []error
+	for _, eventPR := range eventPRs {
+		if err := processPullRequest(ctx, env, gh, cfg, repo, eventPR, logger); err != nil {
+			processErrors = append(processErrors, fmt.Errorf("process PR #%d: %w", eventPR.Number, err))
+		}
+	}
+	return errors.Join(processErrors...)
+}
+
+func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Config, repo string, eventPR eventPullRequest, logger *log.Logger) error {
 	pr, err := gh.getPullRequestWithMergeability(ctx, repo, eventPR.Number)
 	if err != nil {
 		return err
@@ -86,7 +114,7 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return nil
 	}
 
-	state, err := waitForChecks(ctx, gh, cfg, repo, pr.Head.SHA, env.get("GITHUB_RUN_ID"), logger)
+	state, err := waitForChecks(ctx, gh, cfg, repo, pr.Head.SHA, logger)
 	if err != nil {
 		return err
 	}
@@ -175,26 +203,58 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		logger.Printf("skip PR #%d because its refreshed merge state is no longer safe: mergeable=%v state=%s", pr.Number, latestPR.Mergeable, latestPR.MergeableState)
 		return nil
 	}
+	// Checks may have waited above. Re-read review threads only after that wait,
+	// then inspect checks once more without waiting so neither safety gate is
+	// left stale by another long poll immediately before merge.
+	state, err = waitForChecks(ctx, gh, cfg, repo, latestPR.Head.SHA, logger)
+	if err != nil {
+		return err
+	}
+	if state == checksPending {
+		logger.Printf("skip PR #%d because checks are pending before merge", pr.Number)
+		return nil
+	}
+	if state == checksFailed {
+		body := maintainerComment(cfg, pr, "failed-checks", "Checks failed for this maintenance bot PR. This may be a breaking dependency or security update and needs maintainer review.")
+		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+	}
 
-	// Keep one final review-thread read immediately before the merge request.
 	openReviewComments, err = gh.hasOpenReviewComments(ctx, repo, pr.Number)
 	if err != nil {
 		body := maintainerComment(cfg, pr, "review-comments-unknown-before-merge", "GitHub did not report whether this maintenance bot PR still has open review comments immediately before merge, so automerge refused to merge it. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 	if openReviewComments {
-		logger.Printf("skip PR #%d because review comments opened after the final retry", pr.Number)
+		logger.Printf("skip PR #%d because review comments remain open after final check wait", pr.Number)
 		return nil
+	}
+
+	state, err = evaluateChecks(ctx, gh, repo, latestPR.Head.SHA, cfg.IgnoredCheckNames, cfg.AutomergeWorkflowPath)
+	if err != nil {
+		return err
+	}
+	if state == checksPending {
+		logger.Printf("skip PR #%d because checks became pending immediately before merge", pr.Number)
+		return nil
+	}
+	if state == checksFailed {
+		body := maintainerComment(cfg, pr, "failed-checks", "Checks failed for this maintenance bot PR. This may be a breaking dependency or security update and needs maintainer review.")
+		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
 
 	if cfg.DryRun {
 		logger.Printf("dry run: would merge PR #%d with method %s", pr.Number, cfg.MergeMethod)
 		return nil
 	}
-	if err := gh.mergePullRequest(ctx, repo, pr.Number, cfg.MergeMethod); err != nil {
+	if err := gh.mergePullRequest(ctx, repo, pr.Number, cfg.MergeMethod, pr.Head.SHA); err != nil {
 		latestPR, stateErr := gh.getPullRequest(ctx, repo, pr.Number)
-		if stateErr == nil && latestPR.State != "open" {
-			logger.Printf("PR #%d is already closed after a concurrent merge; treating merge as successful", pr.Number)
+		if stateErr == nil && latestPR.Merged {
+			logger.Printf("PR #%d is already merged after a concurrent merge; treating merge as successful", pr.Number)
+			return nil
+		}
+		var apiErr *githubAPIError
+		if errors.As(err, &apiErr) && apiErr.statusCode == 409 && stateErr == nil && latestPR.Head.SHA != "" && latestPR.Head.SHA != pr.Head.SHA {
+			logger.Printf("skip PR #%d because its head changed before merge; it can be retried on a later event", pr.Number)
 			return nil
 		}
 		body := maintainerComment(cfg, pr, "merge-failed", "GitHub refused to merge this maintenance bot PR. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
@@ -283,10 +343,10 @@ func waitForReviewRetry(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo string, sha string, currentRunID string, logger *log.Logger) (checkState, error) {
+func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo string, sha string, logger *log.Logger) (checkState, error) {
 	deadline := time.Now().Add(cfg.WaitTimeout)
 	for {
-		state, err := evaluateChecks(ctx, gh, repo, sha, currentRunID, cfg.IgnoredCheckNames)
+		state, err := evaluateChecks(ctx, gh, repo, sha, cfg.IgnoredCheckNames, cfg.AutomergeWorkflowPath)
 		if err != nil || state != checksPending || cfg.WaitTimeout == 0 || time.Now().After(deadline) {
 			return state, err
 		}
@@ -299,50 +359,103 @@ func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo strin
 	}
 }
 
-func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, currentRunID string, ignoredCheckNames []string) (checkState, error) {
+func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, ignoredCheckNames []string, expectedWorkflowPath string) (checkState, error) {
 	status, err := gh.getCombinedStatus(ctx, repo, sha)
 	if err != nil && !isOptionalAPIError(err) {
+		if errors.Is(err, errPaginationChanged) {
+			return checksPending, nil
+		}
 		return checksFailed, err
 	}
 	runs, err := gh.getCheckRuns(ctx, repo, sha)
 	if err != nil && !isOptionalAPIError(err) {
+		if errors.Is(err, errPaginationChanged) {
+			return checksPending, nil
+		}
 		return checksFailed, err
 	}
-	if status.State == "pending" && len(status.Statuses) > 0 {
-		return checksPending, nil
-	}
-	if status.State == "failure" || status.State == "error" {
+	if len(status.Statuses) == 0 && (status.State == "failure" || status.State == "error") {
 		return checksFailed, nil
 	}
-	seenRuns := 0
-	for _, run := range runs.CheckRuns {
-		if isCurrentRun(run, currentRunID) || containsLogin(ignoredCheckNames, run.Name) {
-			continue
-		}
-		seenRuns++
-		if run.Status != "completed" {
-			return checksPending, nil
-		}
-		if run.Conclusion == nil {
-			return checksPending, nil
-		}
-		if !allowedConclusion(*run.Conclusion) {
-			return checksFailed, nil
+	pending := false
+	failed := false
+	for _, commit := range status.Statuses {
+		switch commit.State {
+		case "success":
+		case "pending":
+			pending = true
+		default:
+			failed = true
 		}
 	}
-	// No non-excluded check runs yet — checks haven't started; treat as pending.
-	if seenRuns == 0 && len(status.Statuses) == 0 {
+	verifiedRuns := make(map[int64]bool)
+	if len(runs.CheckRuns) == 0 && len(status.Statuses) == 0 {
+		return checksPending, nil
+	}
+	for _, run := range runs.CheckRuns {
+		if isIgnoredCheck(ignoredCheckNames, run.Name) {
+			if expectedWorkflowPath == "" && (run.Status != "completed" || run.Conclusion == nil) {
+				return checksFailed, fmt.Errorf("automerge-workflow-path is required to ignore pending check run %q", run.Name)
+			}
+			if gh.isVerifiedAutomergeRun(ctx, repo, sha, expectedWorkflowPath, run, verifiedRuns) {
+				continue
+			}
+		}
+		if run.Status != "completed" || run.Conclusion == nil {
+			pending = true
+			continue
+		}
+		if !allowedConclusion(*run.Conclusion) {
+			failed = true
+		}
+	}
+	if failed {
+		return checksFailed, nil
+	}
+	if pending {
 		return checksPending, nil
 	}
 	return checksPassed, nil
+}
+
+func (c *githubClient) isVerifiedAutomergeRun(ctx context.Context, repo, sha, workflowPath string, check checkRun, cache map[int64]bool) bool {
+	if workflowPath == "" || check.CheckSuite == nil || check.CheckSuite.ID == 0 {
+		return false
+	}
+	u, err := url.Parse(check.DetailsURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 7 || parts[0]+"/"+parts[1] != repo || parts[2] != "actions" || parts[3] != "runs" || parts[5] != "job" {
+		return false
+	}
+	id, err := strconv.ParseInt(parts[4], 10, 64)
+	if err != nil || id <= 0 {
+		return false
+	}
+	if valid, ok := cache[check.ID]; ok && check.ID != 0 {
+		return valid
+	}
+	run, err := c.getWorkflowRun(ctx, repo, id)
+	valid := err == nil && run.ID == id && run.CheckSuiteID == check.CheckSuite.ID && run.HeadSHA == sha && run.Repository.FullName == repo && strings.SplitN(run.Path, "@", 2)[0] == workflowPath
+	if check.ID != 0 {
+		cache[check.ID] = valid
+	}
+	return valid
 }
 
 func isOptionalAPIError(err error) bool {
 	return err == errNotFound
 }
 
-func isCurrentRun(run checkRun, currentRunID string) bool {
-	return currentRunID != "" && strings.Contains(run.DetailsURL, "/actions/runs/"+currentRunID)
+func isIgnoredCheck(ignored []string, name string) bool {
+	for _, ignoredName := range ignored {
+		if ignoredName == name {
+			return true
+		}
+	}
+	return false
 }
 
 func allowedConclusion(conclusion string) bool {
@@ -384,21 +497,8 @@ func containsLogin(logins []string, login string) bool {
 }
 
 func mergeApprovedComment(pr pullRequest, mergeMethod string) string {
-	message := fmt.Sprintf("Automerge approved for this maintenance bot PR. Checks passed, GitHub reports the PR as mergeable, and pr-automerge-github-action is merging it with the %s method.\n\nManaged by [oleg-koval/pr-automerge-github-action](https://github.com/oleg-koval/pr-automerge-github-action).\n\n![Tiny merge celebration](%s)", mergeMethod, successGIF(pr.Head.SHA))
+	message := fmt.Sprintf("Automerge checks passed for this maintenance bot PR. The action will attempt the merge using the %s method after a final head and safety recheck; this message does not confirm that a merge occurred.\n\nManaged by [oleg-koval/pr-automerge-github-action](https://github.com/oleg-koval/pr-automerge-github-action).", mergeMethod)
 	return markerComment(pr, "merge-approved", message)
-}
-
-func successGIF(seed string) string {
-	gifs := []string{
-		"https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
-		"https://media.giphy.com/media/26u4lOMA8JKSnL9Uk/giphy.gif",
-		"https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif",
-	}
-	var sum int
-	for _, char := range seed {
-		sum += int(char)
-	}
-	return gifs[sum%len(gifs)]
 }
 
 func markerComment(pr pullRequest, reason string, message string) string {

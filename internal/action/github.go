@@ -9,12 +9,22 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 )
 
-var errNotFound = errors.New("not found")
+var (
+	errNotFound          = errors.New("not found")
+	errPaginationChanged = errors.New("results changed during pagination")
+)
+
+const (
+	statusPageSize        = 100
+	checkRunPageSize      = 100
+	maxGitHubResponseSize = 32 << 20
+)
 
 type githubRateLimitError struct {
 	resetAt time.Time
@@ -34,6 +44,17 @@ type githubClient struct {
 	client  *http.Client
 }
 
+type githubAPIError struct {
+	method     string
+	path       string
+	statusCode int
+	body       string
+}
+
+func (e *githubAPIError) Error() string {
+	return fmt.Sprintf("github api %s %s returned %d: %s", e.method, e.path, e.statusCode, e.body)
+}
+
 func newGitHubClient(baseURL string, token string) *githubClient {
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
@@ -48,6 +69,7 @@ func newGitHubClient(baseURL string, token string) *githubClient {
 type pullRequest struct {
 	Number         int    `json:"number"`
 	State          string `json:"state"`
+	Merged         bool   `json:"merged"`
 	Draft          bool   `json:"draft"`
 	Mergeable      *bool  `json:"mergeable"`
 	MergeableState string `json:"mergeable_state"`
@@ -56,6 +78,7 @@ type pullRequest struct {
 }
 
 type ghUser struct {
+	ID    int64  `json:"id"`
 	Login string `json:"login"`
 }
 
@@ -68,24 +91,56 @@ type contentResponse struct {
 }
 
 type combinedStatus struct {
-	State    string         `json:"state"`
-	Statuses []commitStatus `json:"statuses"`
+	State      string         `json:"state"`
+	TotalCount int            `json:"total_count"`
+	Statuses   []commitStatus `json:"statuses"`
 }
 
 type commitStatus struct {
-	Context string `json:"context"`
-	State   string `json:"state"`
+	ID        int64     `json:"id"`
+	Context   string    `json:"context"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	Creator   ghUser    `json:"creator"`
 }
 
 type checkRunsResponse struct {
-	CheckRuns []checkRun `json:"check_runs"`
+	TotalCount int        `json:"total_count"`
+	CheckRuns  []checkRun `json:"check_runs"`
 }
 
 type checkRun struct {
-	Name       string  `json:"name"`
-	Status     string  `json:"status"`
-	Conclusion *string `json:"conclusion"`
-	DetailsURL string  `json:"details_url"`
+	ID         int64         `json:"id"`
+	Name       string        `json:"name"`
+	Status     string        `json:"status"`
+	Conclusion *string       `json:"conclusion"`
+	DetailsURL string        `json:"details_url"`
+	App        *ghApp        `json:"app"`
+	CheckSuite *ghCheckSuite `json:"check_suite"`
+}
+
+type ghCheckSuite struct {
+	ID int64 `json:"id"`
+}
+
+type workflowRun struct {
+	ID           int64  `json:"id"`
+	Path         string `json:"path"`
+	HeadSHA      string `json:"head_sha"`
+	CheckSuiteID int64  `json:"check_suite_id"`
+	Repository   struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+}
+
+func (c *githubClient) getWorkflowRun(ctx context.Context, repo string, id int64) (workflowRun, error) {
+	var run workflowRun
+	err := c.request(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/actions/runs/%d", repo, id), nil, &run)
+	return run, err
+}
+
+type ghApp struct {
+	ID int64 `json:"id"`
 }
 
 type issueComment struct {
@@ -168,15 +223,110 @@ func escapePath(path string) string {
 }
 
 func (c *githubClient) getCombinedStatus(ctx context.Context, repo string, sha string) (combinedStatus, error) {
-	var status combinedStatus
-	err := c.request(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/status", repo, sha), nil, &status)
-	return status, err
+	first, paginated, err := c.scanCombinedStatus(ctx, repo, sha)
+	if err != nil || !paginated {
+		return first, err
+	}
+	second, _, err := c.scanCombinedStatus(ctx, repo, sha)
+	if err != nil {
+		return combinedStatus{}, err
+	}
+	if !reflect.DeepEqual(first, second) {
+		return combinedStatus{}, errPaginationChanged
+	}
+	return second, nil
+}
+
+func (c *githubClient) scanCombinedStatus(ctx context.Context, repo string, sha string) (combinedStatus, bool, error) {
+	var combined combinedStatus
+	seen := make(map[int64]bool)
+	for page := 1; ; page++ {
+		var current combinedStatus
+		path := fmt.Sprintf("/repos/%s/commits/%s/status?per_page=%d&page=%d", repo, sha, statusPageSize, page)
+		if err := c.request(ctx, http.MethodGet, path, nil, &current); err != nil {
+			if page > 1 && errors.Is(err, errNotFound) {
+				return combinedStatus{}, false, fmt.Errorf("commit status page %d missing: %w", page, &githubAPIError{method: http.MethodGet, path: path, statusCode: http.StatusNotFound})
+			}
+			return combinedStatus{}, false, err
+		}
+		if page == 1 {
+			combined.State = current.State
+			combined.TotalCount = current.TotalCount
+		} else if current.TotalCount != combined.TotalCount {
+			return combinedStatus{}, false, fmt.Errorf("%w: commit statuses total_count was %d and is now %d", errPaginationChanged, combined.TotalCount, current.TotalCount)
+		}
+		for _, record := range current.Statuses {
+			if record.ID != 0 {
+				if seen[record.ID] {
+					return combinedStatus{}, false, errPaginationChanged
+				}
+				seen[record.ID] = true
+			}
+		}
+		combined.Statuses = append(combined.Statuses, current.Statuses...)
+		if len(combined.Statuses) > combined.TotalCount {
+			return combinedStatus{}, false, fmt.Errorf("commit status pagination returned %d records for total_count %d", len(combined.Statuses), combined.TotalCount)
+		}
+		if len(combined.Statuses) == combined.TotalCount {
+			return combined, page > 1, nil
+		}
+		if len(current.Statuses) == 0 {
+			return combinedStatus{}, false, fmt.Errorf("commit status pagination stopped at %d of %d records", len(combined.Statuses), combined.TotalCount)
+		}
+	}
 }
 
 func (c *githubClient) getCheckRuns(ctx context.Context, repo string, sha string) (checkRunsResponse, error) {
-	var runs checkRunsResponse
-	err := c.request(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/check-runs", repo, sha), nil, &runs)
-	return runs, err
+	first, paginated, err := c.scanCheckRuns(ctx, repo, sha)
+	if err != nil || !paginated {
+		return first, err
+	}
+	second, _, err := c.scanCheckRuns(ctx, repo, sha)
+	if err != nil {
+		return checkRunsResponse{}, err
+	}
+	if !reflect.DeepEqual(first, second) {
+		return checkRunsResponse{}, errPaginationChanged
+	}
+	return second, nil
+}
+
+func (c *githubClient) scanCheckRuns(ctx context.Context, repo string, sha string) (checkRunsResponse, bool, error) {
+	var combined checkRunsResponse
+	seen := make(map[int64]bool)
+	for page := 1; ; page++ {
+		var current checkRunsResponse
+		path := fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=%d&page=%d", repo, sha, checkRunPageSize, page)
+		if err := c.request(ctx, http.MethodGet, path, nil, &current); err != nil {
+			if page > 1 && errors.Is(err, errNotFound) {
+				return checkRunsResponse{}, false, fmt.Errorf("check run page %d missing: %w", page, &githubAPIError{method: http.MethodGet, path: path, statusCode: http.StatusNotFound})
+			}
+			return checkRunsResponse{}, false, err
+		}
+		if page == 1 {
+			combined.TotalCount = current.TotalCount
+		} else if current.TotalCount != combined.TotalCount {
+			return checkRunsResponse{}, false, fmt.Errorf("%w: check runs total_count was %d and is now %d", errPaginationChanged, combined.TotalCount, current.TotalCount)
+		}
+		for _, record := range current.CheckRuns {
+			if record.ID != 0 {
+				if seen[record.ID] {
+					return checkRunsResponse{}, false, errPaginationChanged
+				}
+				seen[record.ID] = true
+			}
+		}
+		combined.CheckRuns = append(combined.CheckRuns, current.CheckRuns...)
+		if len(combined.CheckRuns) > combined.TotalCount {
+			return checkRunsResponse{}, false, fmt.Errorf("check run pagination returned %d records for total_count %d", len(combined.CheckRuns), combined.TotalCount)
+		}
+		if len(combined.CheckRuns) == combined.TotalCount {
+			return combined, page > 1, nil
+		}
+		if len(current.CheckRuns) == 0 {
+			return checkRunsResponse{}, false, fmt.Errorf("check run pagination stopped at %d of %d records", len(combined.CheckRuns), combined.TotalCount)
+		}
+	}
 }
 
 func (c *githubClient) listComments(ctx context.Context, repo string, number int) ([]issueComment, error) {
@@ -239,8 +389,8 @@ func (c *githubClient) createComment(ctx context.Context, repo string, number in
 	return c.request(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number), payload, nil)
 }
 
-func (c *githubClient) mergePullRequest(ctx context.Context, repo string, number int, method string) error {
-	payload := map[string]string{"merge_method": method}
+func (c *githubClient) mergePullRequest(ctx context.Context, repo string, number int, method string, expectedHeadSHA string) error {
+	payload := map[string]string{"merge_method": method, "sha": expectedHeadSHA}
 	return c.request(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, number), payload, nil)
 }
 
@@ -280,9 +430,12 @@ func (c *githubClient) request(ctx context.Context, method string, path string, 
 	defer func() {
 		_ = resp.Body.Close()
 	}()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxGitHubResponseSize+1))
 	if err != nil {
 		return err
+	}
+	if len(data) > maxGitHubResponseSize {
+		return fmt.Errorf("github api response exceeded %d bytes", maxGitHubResponseSize)
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return errNotFound
@@ -297,7 +450,7 @@ func (c *githubClient) request(ctx context.Context, method string, path string, 
 		return &githubRateLimitError{resetAt: resetAt, message: strings.TrimSpace(string(data))}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("github api %s %s returned %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
+		return &githubAPIError{method: method, path: path, statusCode: resp.StatusCode, body: strings.TrimSpace(string(data))}
 	}
 	if target == nil || len(data) == 0 {
 		return nil
