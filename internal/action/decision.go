@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -218,10 +219,14 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 		logger.Printf("dry run: would merge PR #%d with method %s", pr.Number, cfg.MergeMethod)
 		return nil
 	}
-	if err := gh.mergePullRequest(ctx, repo, pr.Number, cfg.MergeMethod); err != nil {
+	if err := gh.mergePullRequest(ctx, repo, pr.Number, cfg.MergeMethod, pr.Head.SHA); err != nil {
+		if errors.Is(err, errMergeHeadChanged) {
+			logger.Printf("skip PR #%d because its head changed before merge; it can be retried on a later event", pr.Number)
+			return nil
+		}
 		latestPR, stateErr := gh.getPullRequest(ctx, repo, pr.Number)
-		if stateErr == nil && latestPR.State != "open" {
-			logger.Printf("PR #%d is already closed after a concurrent merge; treating merge as successful", pr.Number)
+		if stateErr == nil && latestPR.Merged {
+			logger.Printf("PR #%d is already merged after a concurrent merge; treating merge as successful", pr.Number)
 			return nil
 		}
 		body := maintainerComment(cfg, pr, "merge-failed", "GitHub refused to merge this maintenance bot PR. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
@@ -326,6 +331,16 @@ func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo strin
 	}
 }
 
+type statusIdentity struct {
+	context  string
+	producer string
+}
+
+type checkRunIdentity struct {
+	name     string
+	producer string
+}
+
 func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, currentRunID string, ignoredCheckNames []string) (checkState, error) {
 	status, err := gh.getCombinedStatus(ctx, repo, sha)
 	if err != nil && !isOptionalAPIError(err) {
@@ -344,11 +359,12 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 	if len(status.Statuses) == 0 && (status.State == "failure" || status.State == "error") {
 		return checksFailed, nil
 	}
-	latestStatuses := make(map[string]commitStatus, len(status.Statuses))
-	for _, commit := range status.Statuses {
-		latest, exists := latestStatuses[commit.Context]
-		if !exists || commit.CreatedAt.After(latest.CreatedAt) {
-			latestStatuses[commit.Context] = commit
+	latestStatuses := make(map[statusIdentity]commitStatus, len(status.Statuses))
+	for index, commit := range status.Statuses {
+		key := statusIdentity{context: commit.Context, producer: statusProducer(commit, index)}
+		latest, exists := latestStatuses[key]
+		if !exists || commit.CreatedAt.After(latest.CreatedAt) || (commit.CreatedAt.Equal(latest.CreatedAt) && commit.ID > latest.ID) {
+			latestStatuses[key] = commit
 		}
 	}
 	statusesPending := false
@@ -364,14 +380,15 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 	if statusesPending {
 		return checksPending, nil
 	}
-	latestRuns := make(map[string]checkRun, len(runs.CheckRuns))
-	for _, run := range runs.CheckRuns {
+	latestRuns := make(map[checkRunIdentity]checkRun, len(runs.CheckRuns))
+	for index, run := range runs.CheckRuns {
 		if isCurrentRun(run, currentRunID) || isIgnoredCheck(ignoredCheckNames, run.Name) {
 			continue
 		}
-		latest, exists := latestRuns[run.Name]
+		key := checkRunIdentity{name: run.Name, producer: checkRunProducer(run, index)}
+		latest, exists := latestRuns[key]
 		if !exists || run.ID > latest.ID {
-			latestRuns[run.Name] = run
+			latestRuns[key] = run
 		}
 	}
 	if len(latestRuns) == 0 && len(status.Statuses) == 0 {
@@ -397,23 +414,48 @@ func isOptionalAPIError(err error) bool {
 	return err == errNotFound
 }
 
+func statusProducer(status commitStatus, index int) string {
+	if status.Creator.ID != 0 {
+		return fmt.Sprintf("user-id:%d", status.Creator.ID)
+	}
+	if status.Creator.Login != "" {
+		return "user-login:" + strings.ToLower(status.Creator.Login)
+	}
+	if status.ID != 0 {
+		return fmt.Sprintf("status-id:%d", status.ID)
+	}
+	return fmt.Sprintf("unknown-status:%d", index)
+}
+
+func checkRunProducer(run checkRun, index int) string {
+	if run.App != nil && run.App.ID != 0 {
+		return fmt.Sprintf("app-id:%d", run.App.ID)
+	}
+	if run.ID != 0 {
+		return fmt.Sprintf("check-run-id:%d", run.ID)
+	}
+	return fmt.Sprintf("unknown-check-run:%d", index)
+}
+
 func isCurrentRun(run checkRun, currentRunID string) bool {
-	return currentRunID != "" && strings.Contains(run.DetailsURL, "/actions/runs/"+currentRunID)
+	if currentRunID == "" {
+		return false
+	}
+	parsedURL, err := url.Parse(run.DetailsURL)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(strings.Trim(parsedURL.Path, "/"), "/")
+	for index := 0; index+2 < len(parts); index++ {
+		if parts[index] == "actions" && parts[index+1] == "runs" && parts[index+2] == currentRunID {
+			return true
+		}
+	}
+	return false
 }
 
 func isIgnoredCheck(ignored []string, name string) bool {
-	if containsLogin(ignored, name) {
-		return true
-	}
-	if !strings.HasSuffix(name, ")") {
-		return false
-	}
-	base, suffix, ok := strings.Cut(name, " (")
-	if !ok || base == "" {
-		return false
-	}
-	matrixNumber, err := strconv.Atoi(strings.TrimSuffix(suffix, ")"))
-	return err == nil && matrixNumber > 0 && containsLogin(ignored, base)
+	return containsLogin(ignored, name)
 }
 
 func allowedConclusion(conclusion string) bool {
@@ -455,21 +497,8 @@ func containsLogin(logins []string, login string) bool {
 }
 
 func mergeApprovedComment(pr pullRequest, mergeMethod string) string {
-	message := fmt.Sprintf("Automerge approved for this maintenance bot PR. Checks passed, GitHub reports the PR as mergeable, and pr-automerge-github-action is merging it with the %s method.\n\nManaged by [oleg-koval/pr-automerge-github-action](https://github.com/oleg-koval/pr-automerge-github-action).\n\n![Tiny merge celebration](%s)", mergeMethod, successGIF(pr.Head.SHA))
+	message := fmt.Sprintf("Automerge checks passed for this maintenance bot PR. The action will attempt the merge using the %s method after a final head and safety recheck; this message does not confirm that a merge occurred.\n\nManaged by [oleg-koval/pr-automerge-github-action](https://github.com/oleg-koval/pr-automerge-github-action).", mergeMethod)
 	return markerComment(pr, "merge-approved", message)
-}
-
-func successGIF(seed string) string {
-	gifs := []string{
-		"https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
-		"https://media.giphy.com/media/26u4lOMA8JKSnL9Uk/giphy.gif",
-		"https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif",
-	}
-	var sum int
-	for _, char := range seed {
-		sum += int(char)
-	}
-	return gifs[sum%len(gifs)]
 }
 
 func markerComment(pr pullRequest, reason string, message string) string {

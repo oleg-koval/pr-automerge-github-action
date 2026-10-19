@@ -27,7 +27,7 @@ inputs:
     description: Initial poll interval while waiting for checks or open review threads; review-thread polling is clamped to one second and backs off up to five minutes. Use Go duration syntax, for example 30s.
     required: false
   ignored-check-names:
-    description: Comma-separated check run names ignored while deciding merge readiness. Defaults to automerge.
+    description: Comma-separated exact check run names ignored while deciding merge readiness. Defaults to automerge. Matrix-expanded names must be listed exactly.
     required: false
   dry-run:
     description: Log intended actions without commenting or merging.

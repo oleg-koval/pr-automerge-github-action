@@ -17,12 +17,13 @@ import (
 var (
 	errNotFound          = errors.New("not found")
 	errPaginationChanged = errors.New("results changed during pagination")
+	errMergeHeadChanged  = errors.New("pull request head changed before merge")
 )
 
 const (
 	statusPageSize        = 100
 	checkRunPageSize      = 100
-	maxGitHubResponseSize = 8 << 20
+	maxGitHubResponseSize = 32 << 20
 )
 
 type githubRateLimitError struct {
@@ -43,6 +44,17 @@ type githubClient struct {
 	client  *http.Client
 }
 
+type githubAPIError struct {
+	method     string
+	path       string
+	statusCode int
+	body       string
+}
+
+func (e *githubAPIError) Error() string {
+	return fmt.Sprintf("github api %s %s returned %d: %s", e.method, e.path, e.statusCode, e.body)
+}
+
 func newGitHubClient(baseURL string, token string) *githubClient {
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
@@ -57,6 +69,7 @@ func newGitHubClient(baseURL string, token string) *githubClient {
 type pullRequest struct {
 	Number         int    `json:"number"`
 	State          string `json:"state"`
+	Merged         bool   `json:"merged"`
 	Draft          bool   `json:"draft"`
 	Mergeable      *bool  `json:"mergeable"`
 	MergeableState string `json:"mergeable_state"`
@@ -65,6 +78,7 @@ type pullRequest struct {
 }
 
 type ghUser struct {
+	ID    int64  `json:"id"`
 	Login string `json:"login"`
 }
 
@@ -83,9 +97,11 @@ type combinedStatus struct {
 }
 
 type commitStatus struct {
+	ID        int64     `json:"id"`
 	Context   string    `json:"context"`
 	State     string    `json:"state"`
 	CreatedAt time.Time `json:"created_at"`
+	Creator   ghUser    `json:"creator"`
 }
 
 type checkRunsResponse struct {
@@ -99,6 +115,11 @@ type checkRun struct {
 	Status     string  `json:"status"`
 	Conclusion *string `json:"conclusion"`
 	DetailsURL string  `json:"details_url"`
+	App        *ghApp  `json:"app"`
+}
+
+type ghApp struct {
+	ID int64 `json:"id"`
 }
 
 type issueComment struct {
@@ -293,9 +314,14 @@ func (c *githubClient) createComment(ctx context.Context, repo string, number in
 	return c.request(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number), payload, nil)
 }
 
-func (c *githubClient) mergePullRequest(ctx context.Context, repo string, number int, method string) error {
-	payload := map[string]string{"merge_method": method}
-	return c.request(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, number), payload, nil)
+func (c *githubClient) mergePullRequest(ctx context.Context, repo string, number int, method string, expectedHeadSHA string) error {
+	payload := map[string]string{"merge_method": method, "sha": expectedHeadSHA}
+	err := c.request(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, number), payload, nil)
+	var apiErr *githubAPIError
+	if errors.As(err, &apiErr) && apiErr.statusCode == http.StatusConflict {
+		return fmt.Errorf("%w: %v", errMergeHeadChanged, err)
+	}
+	return err
 }
 
 func (c *githubClient) updateBranch(ctx context.Context, repo string, number int) error {
@@ -354,7 +380,7 @@ func (c *githubClient) request(ctx context.Context, method string, path string, 
 		return &githubRateLimitError{resetAt: resetAt, message: strings.TrimSpace(string(data))}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("github api %s %s returned %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
+		return &githubAPIError{method: method, path: path, statusCode: resp.StatusCode, body: strings.TrimSpace(string(data))}
 	}
 	if target == nil || len(data) == 0 {
 		return nil

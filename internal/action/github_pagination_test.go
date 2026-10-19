@@ -138,8 +138,21 @@ func TestGetCombinedStatusRejectsCountChangesBetweenPages(t *testing.T) {
 	}
 }
 
+func TestGetCheckRunsRejectsOversizedResponse(t *testing.T) {
+	body := strings.Repeat(" ", maxGitHubResponseSize+1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer server.Close()
+
+	_, err := newGitHubClient(server.URL, "").getCheckRuns(context.Background(), "acme/project", "abc")
+	if err == nil || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("getCheckRuns() error = %v, want bounded-response error", err)
+	}
+}
+
 func TestGetCheckRunsAcceptsLargeOutputResponse(t *testing.T) {
-	output := strings.Repeat("x", 2<<20)
+	output := strings.Repeat("x", 9<<20)
 	body := fmt.Sprintf(`{"total_count":1,"check_runs":[{"name":"ci","status":"completed","conclusion":"success","output":{"summary":%q}}]}`, output)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, body)

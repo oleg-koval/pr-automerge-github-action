@@ -18,7 +18,7 @@ Copy the complete, security-scoped workflow from [`examples/workflow.yml`](examp
 | `pr-number` | unset | Pull request for a per-PR matrix run or a scheduled/manual retry; webhook events require it to be associated with that event. |
 | `wait-timeout` | `30m` | Maximum time to wait for pending checks and open review threads before deciding. Set `0s` to fail fast. |
 | `wait-interval` | `30s` | Initial poll interval while waiting for checks or open review threads; it backs off up to five minutes. |
-| `ignored-check-names` | `automerge` | Comma-separated check run names ignored while deciding merge readiness. |
+| `ignored-check-names` | `automerge` | Comma-separated exact check run names ignored while deciding merge readiness; matrix-expanded names must be listed exactly. |
 | `dry-run` | `false` | Log intended comments and merges without writing. |
 
 ## Config file
