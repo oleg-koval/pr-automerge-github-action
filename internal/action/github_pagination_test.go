@@ -12,14 +12,14 @@ import (
 
 func TestGetCheckRunsPaginatesUntilLastPage(t *testing.T) {
 	ok := "success"
-	firstPage := make([]checkRun, 10)
+	firstPage := make([]checkRun, 100)
 	for i := range firstPage {
 		firstPage[i] = checkRun{Name: fmt.Sprintf("check-%d", i), Status: "completed", Conclusion: &ok}
 	}
 	failed := "failure"
 	pages := map[string]string{
-		"1": marshalTestJSON(t, checkRunsResponse{TotalCount: 11, CheckRuns: firstPage}),
-		"2": marshalTestJSON(t, checkRunsResponse{TotalCount: 11, CheckRuns: []checkRun{{Name: "later", Status: "completed", Conclusion: &failed}}}),
+		"1": marshalTestJSON(t, checkRunsResponse{TotalCount: 101, CheckRuns: firstPage}),
+		"2": marshalTestJSON(t, checkRunsResponse{TotalCount: 101, CheckRuns: []checkRun{{Name: "later", Status: "completed", Conclusion: &failed}}}),
 	}
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,8 +27,8 @@ func TestGetCheckRunsPaginatesUntilLastPage(t *testing.T) {
 		if r.URL.Path != "/repos/acme/project/commits/abc/check-runs" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("per_page") != "10" {
-			t.Errorf("per_page = %q, want 10", r.URL.Query().Get("per_page"))
+		if r.URL.Query().Get("per_page") != "100" {
+			t.Errorf("per_page = %q, want 100", r.URL.Query().Get("per_page"))
 		}
 		if body, ok := pages[r.URL.Query().Get("page")]; ok {
 			_, _ = fmt.Fprint(w, body)
@@ -47,22 +47,22 @@ func TestGetCheckRunsPaginatesUntilLastPage(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("request count = %d, want 2 pages", calls)
 	}
-	if len(runs.CheckRuns) != 11 {
-		t.Fatalf("check run count = %d, want 11", len(runs.CheckRuns))
+	if len(runs.CheckRuns) != 101 {
+		t.Fatalf("check run count = %d, want 101", len(runs.CheckRuns))
 	}
-	if runs.CheckRuns[10].Name != "later" || runs.CheckRuns[10].Conclusion == nil || *runs.CheckRuns[10].Conclusion != "failure" {
-		t.Fatalf("later-page failing check was not preserved: %#v", runs.CheckRuns[10])
+	if runs.CheckRuns[100].Name != "later" || runs.CheckRuns[100].Conclusion == nil || *runs.CheckRuns[100].Conclusion != "failure" {
+		t.Fatalf("later-page failing check was not preserved: %#v", runs.CheckRuns[100])
 	}
 }
 
 func TestGetCombinedStatusPaginatesStatuses(t *testing.T) {
-	firstPage := make([]commitStatus, 10)
+	firstPage := make([]commitStatus, 100)
 	for i := range firstPage {
 		firstPage[i] = commitStatus{Context: fmt.Sprintf("status-%d", i), State: "success"}
 	}
 	pages := map[string]string{
-		"1": marshalTestJSON(t, combinedStatus{State: "failure", TotalCount: 11, Statuses: firstPage}),
-		"2": marshalTestJSON(t, combinedStatus{State: "failure", TotalCount: 11, Statuses: []commitStatus{{Context: "later", State: "failure"}}}),
+		"1": marshalTestJSON(t, combinedStatus{State: "failure", TotalCount: 101, Statuses: firstPage}),
+		"2": marshalTestJSON(t, combinedStatus{State: "failure", TotalCount: 101, Statuses: []commitStatus{{Context: "later", State: "failure"}}}),
 	}
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +71,7 @@ func TestGetCombinedStatusPaginatesStatuses(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		if r.URL.Query().Get("per_page") != "100" {
-			t.Errorf("per_page = %q, want 10", r.URL.Query().Get("per_page"))
+			t.Errorf("per_page = %q, want 100", r.URL.Query().Get("per_page"))
 		}
 		if body, ok := pages[r.URL.Query().Get("page")]; ok {
 			_, _ = fmt.Fprint(w, body)
@@ -90,7 +90,7 @@ func TestGetCombinedStatusPaginatesStatuses(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("request count = %d, want 2 pages", calls)
 	}
-	if len(status.Statuses) != 11 || status.Statuses[10].Context != "later" || status.Statuses[10].State != "failure" {
+	if len(status.Statuses) != 101 || status.Statuses[100].Context != "later" || status.Statuses[100].State != "failure" {
 		t.Fatalf("later-page failing status was not preserved: %#v", status.Statuses)
 	}
 }
@@ -105,10 +105,10 @@ func marshalTestJSON(t *testing.T, value any) string {
 }
 
 func TestGetCheckRunsRejectsCountChangesBetweenPages(t *testing.T) {
-	page := make([]checkRun, 10)
+	page := make([]checkRun, 100)
 	pages := map[string]checkRunsResponse{
-		"1": {TotalCount: 11, CheckRuns: page},
-		"2": {TotalCount: 12, CheckRuns: []checkRun{{Name: "later"}}},
+		"1": {TotalCount: 101, CheckRuns: page},
+		"2": {TotalCount: 102, CheckRuns: []checkRun{{Name: "later"}}},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(pages[r.URL.Query().Get("page")])
@@ -122,10 +122,10 @@ func TestGetCheckRunsRejectsCountChangesBetweenPages(t *testing.T) {
 }
 
 func TestGetCombinedStatusRejectsCountChangesBetweenPages(t *testing.T) {
-	page := make([]commitStatus, 10)
+	page := make([]commitStatus, 100)
 	pages := map[string]combinedStatus{
-		"1": {TotalCount: 11, Statuses: page},
-		"2": {TotalCount: 12, Statuses: []commitStatus{{Context: "later", State: "failure"}}},
+		"1": {TotalCount: 101, Statuses: page},
+		"2": {TotalCount: 102, Statuses: []commitStatus{{Context: "later", State: "failure"}}},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(pages[r.URL.Query().Get("page")])

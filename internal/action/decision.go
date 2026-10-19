@@ -329,10 +329,16 @@ func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo strin
 func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, currentRunID string, ignoredCheckNames []string) (checkState, error) {
 	status, err := gh.getCombinedStatus(ctx, repo, sha)
 	if err != nil && !isOptionalAPIError(err) {
+		if errors.Is(err, errPaginationChanged) {
+			return checksPending, nil
+		}
 		return checksFailed, err
 	}
 	runs, err := gh.getCheckRuns(ctx, repo, sha)
 	if err != nil && !isOptionalAPIError(err) {
+		if errors.Is(err, errPaginationChanged) {
+			return checksPending, nil
+		}
 		return checksFailed, err
 	}
 	if len(status.Statuses) == 0 && (status.State == "failure" || status.State == "error") {
@@ -360,7 +366,7 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 	}
 	latestRuns := make(map[string]checkRun, len(runs.CheckRuns))
 	for _, run := range runs.CheckRuns {
-		if isCurrentRun(run, currentRunID) || containsLogin(ignoredCheckNames, run.Name) {
+		if isCurrentRun(run, currentRunID) || isIgnoredCheck(ignoredCheckNames, run.Name) {
 			continue
 		}
 		latest, exists := latestRuns[run.Name]
@@ -393,6 +399,21 @@ func isOptionalAPIError(err error) bool {
 
 func isCurrentRun(run checkRun, currentRunID string) bool {
 	return currentRunID != "" && strings.Contains(run.DetailsURL, "/actions/runs/"+currentRunID)
+}
+
+func isIgnoredCheck(ignored []string, name string) bool {
+	if containsLogin(ignored, name) {
+		return true
+	}
+	if !strings.HasSuffix(name, ")") {
+		return false
+	}
+	base, suffix, ok := strings.Cut(name, " (")
+	if !ok || base == "" {
+		return false
+	}
+	matrixNumber, err := strconv.Atoi(strings.TrimSuffix(suffix, ")"))
+	return err == nil && matrixNumber > 0 && containsLogin(ignored, base)
 }
 
 func allowedConclusion(conclusion string) bool {

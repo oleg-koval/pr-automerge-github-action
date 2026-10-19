@@ -14,11 +14,14 @@ import (
 	"time"
 )
 
-var errNotFound = errors.New("not found")
+var (
+	errNotFound          = errors.New("not found")
+	errPaginationChanged = errors.New("results changed during pagination")
+)
 
 const (
 	statusPageSize        = 100
-	checkRunPageSize      = 10
+	checkRunPageSize      = 100
 	maxGitHubResponseSize = 8 << 20
 )
 
@@ -189,7 +192,7 @@ func (c *githubClient) getCombinedStatus(ctx context.Context, repo string, sha s
 			combined.State = current.State
 			combined.TotalCount = current.TotalCount
 		} else if current.TotalCount != combined.TotalCount {
-			return combinedStatus{}, fmt.Errorf("commit statuses changed during pagination: total_count was %d and is now %d", combined.TotalCount, current.TotalCount)
+			return combinedStatus{}, fmt.Errorf("%w: commit statuses total_count was %d and is now %d", errPaginationChanged, combined.TotalCount, current.TotalCount)
 		}
 		combined.Statuses = append(combined.Statuses, current.Statuses...)
 		if len(combined.Statuses) > combined.TotalCount {
@@ -215,7 +218,7 @@ func (c *githubClient) getCheckRuns(ctx context.Context, repo string, sha string
 		if page == 1 {
 			combined.TotalCount = current.TotalCount
 		} else if current.TotalCount != combined.TotalCount {
-			return checkRunsResponse{}, fmt.Errorf("check runs changed during pagination: total_count was %d and is now %d", combined.TotalCount, current.TotalCount)
+			return checkRunsResponse{}, fmt.Errorf("%w: check runs total_count was %d and is now %d", errPaginationChanged, combined.TotalCount, current.TotalCount)
 		}
 		combined.CheckRuns = append(combined.CheckRuns, current.CheckRuns...)
 		if len(combined.CheckRuns) > combined.TotalCount {
