@@ -58,8 +58,8 @@ jobs:
               ;;
           esac
           count="$(jq 'length' <<<"$prs")"
-          if (( count > 256 )); then
-            echo "Found $count pull requests, exceeding GitHub Actions' 256-job matrix limit; refusing to silently skip retries." >&2
+          if (( count > 255 )); then
+            echo "Found $count pull requests, exceeding the 255-entry matrix budget plus the discover job (GitHub's 256-job workflow limit); refusing to silently skip retries." >&2
             exit 1
           fi
           printf 'pr-numbers=%s\n' "$prs" >> "$GITHUB_OUTPUT"

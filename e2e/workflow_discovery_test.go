@@ -45,8 +45,9 @@ func TestWorkflowDiscoveryScriptsFanOutSafely(t *testing.T) {
 			}{
 				{name: "schedule preserves all records across pagination boundary", event: "schedule", numbers: 101},
 				{name: "blank manual dispatch enumerates open PRs", event: "workflow_dispatch", numbers: 3},
-				{name: "exact matrix limit succeeds", event: "schedule", numbers: 256},
-				{name: "matrix over limit fails without output", event: "schedule", numbers: 257, wantFailure: true},
+				{name: "255 matrix jobs plus discover job fit the workflow limit", event: "schedule", numbers: 255},
+				{name: "256 matrix jobs plus discover job exceed the workflow limit", event: "schedule", numbers: 256, wantFailure: true},
+				{name: "over-limit matrix fails without output", event: "schedule", numbers: 257, wantFailure: true},
 				{name: "empty result writes empty matrix", event: "schedule", empty: true},
 				{name: "later page failure fails closed", event: "schedule", numbers: 101, fail: true, wantFailure: true},
 			} {
@@ -127,8 +128,13 @@ func createFakeGH(t *testing.T) string {
 [ "$1" = "api" ] || exit 90
 shift
 [ "$1" = "--paginate" ] || exit 91
-printf '%s' "$GH_FIXTURE_NUMBERS"
+shift
+[ "$1" = "repos/owner/repo/pulls?state=open&per_page=100" ] || exit 92
+shift
+[ "$1" = "--jq" ] || exit 93
+[ "$2" = ".[].number" ] || exit 94
 [ "$GH_FIXTURE_FAIL" != "true" ] || exit 1
+printf '%s' "$GH_FIXTURE_NUMBERS"
 `
 	if err := os.WriteFile(path, []byte(fake), 0o700); err != nil {
 		t.Fatalf("write fake gh: %v", err)

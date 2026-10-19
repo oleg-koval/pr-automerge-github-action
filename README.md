@@ -19,7 +19,7 @@ Copy the complete, security-scoped workflow from [`examples/workflow.yml`](examp
 | `wait-timeout` | `30m` | Maximum time to wait for pending checks and open review threads before deciding. Set `0s` to fail fast. |
 | `wait-interval` | `30s` | Initial poll interval while waiting for checks or open review threads; it backs off up to five minutes. |
 | `ignored-check-names` | `automerge` | Comma-separated exact names eligible for ignoring only after workflow-run provenance checks; matrix-expanded names must be listed exactly. |
-| `automerge-workflow-path` | unset | Expected `.github/workflows/*.yml` file for the automerge workflow; required to ignore any of its own checks. The example sets `.github/workflows/automerge.yml`. |
+| `automerge-workflow-path` | unset | Expected `.github/workflows/*.yml` file for the automerge workflow. Required to ignore own checks; if an ignored-name check is pending without this path, the action fails fast with a configuration error instead of waiting. The example sets `.github/workflows/automerge.yml`. |
 | `dry-run` | `false` | Log intended comments and merges without writing. |
 
 ## Config file
@@ -47,7 +47,7 @@ automerge_workflow_path: .github/workflows/automerge.yml
 
 The action ignores closed, merged, draft, and non-allowlisted PRs. It waits for checks by default, updates branches behind their base, and only requests a merge when checks/statuses pass, GitHub reports the PR mergeable, and every review thread is resolved. Every distinct status and check run must pass; an old failed record can therefore block even after a newer success. For multi-page responses, two complete scans must agree; inconsistent snapshots remain pending. It refreshes the PR head and checks, then rechecks review threads immediately before requesting the merge. A 409 merge response is considered a stale head only if a subsequent PR read confirms a different SHA; otherwise maintainers are notified. If a merge request races with another actor, the action treats it as successful only when GitHub confirms the PR is merged.
 
-GitHub Actions has no `pull_request_review_thread` trigger, so the example workflow retries every open PR every 10 minutes and supports manual retries with `pr-number`; it paginates discovery and fails loudly rather than silently truncating if more than the 256-job matrix limit is reached. If validation runs in the same workflow, use `needs` so automerge waits for it too. The scheduled retry handles checks from separate workflows.
+GitHub Actions has no `pull_request_review_thread` trigger, so the example workflow retries every open PR every 10 minutes and supports manual retries with `pr-number`; it paginates discovery and fails loudly rather than silently truncating if the PR set would exceed 255 matrix entries plus the discovery job (256 total jobs). If validation runs in the same workflow, use `needs` so automerge waits for it too. The scheduled retry handles checks from separate workflows.
 
 ## Security and branch protection
 

@@ -203,25 +203,38 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 		logger.Printf("skip PR #%d because its refreshed merge state is no longer safe: mergeable=%v state=%s", pr.Number, latestPR.Mergeable, latestPR.MergeableState)
 		return nil
 	}
-	// Keep one final review-thread read immediately before the merge request.
-	openReviewComments, err = gh.hasOpenReviewComments(ctx, repo, pr.Number)
-	if err != nil {
-		body := maintainerComment(cfg, pr, "review-comments-unknown-before-merge", "GitHub did not report whether this maintenance bot PR still has open review comments immediately before merge, so automerge refused to merge it. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
-		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
-	}
-	if openReviewComments {
-		logger.Printf("skip PR #%d because review comments opened after the final retry", pr.Number)
-		return nil
-	}
-
-	// Re-evaluate checks after all other reads so the state used for merge is
-	// as fresh as possible. The merge request also carries the checked head SHA.
+	// Checks may have waited above. Re-read review threads only after that wait,
+	// then inspect checks once more without waiting so neither safety gate is
+	// left stale by another long poll immediately before merge.
 	state, err = waitForChecks(ctx, gh, cfg, repo, latestPR.Head.SHA, logger)
 	if err != nil {
 		return err
 	}
 	if state == checksPending {
 		logger.Printf("skip PR #%d because checks are pending before merge", pr.Number)
+		return nil
+	}
+	if state == checksFailed {
+		body := maintainerComment(cfg, pr, "failed-checks", "Checks failed for this maintenance bot PR. This may be a breaking dependency or security update and needs maintainer review.")
+		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+	}
+
+	openReviewComments, err = gh.hasOpenReviewComments(ctx, repo, pr.Number)
+	if err != nil {
+		body := maintainerComment(cfg, pr, "review-comments-unknown-before-merge", "GitHub did not report whether this maintenance bot PR still has open review comments immediately before merge, so automerge refused to merge it. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
+		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+	}
+	if openReviewComments {
+		logger.Printf("skip PR #%d because review comments remain open after final check wait", pr.Number)
+		return nil
+	}
+
+	state, err = evaluateChecks(ctx, gh, repo, latestPR.Head.SHA, cfg.IgnoredCheckNames, cfg.AutomergeWorkflowPath)
+	if err != nil {
+		return err
+	}
+	if state == checksPending {
+		logger.Printf("skip PR #%d because checks became pending immediately before merge", pr.Number)
 		return nil
 	}
 	if state == checksFailed {
@@ -380,8 +393,13 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 		return checksPending, nil
 	}
 	for _, run := range runs.CheckRuns {
-		if isIgnoredCheck(ignoredCheckNames, run.Name) && gh.isVerifiedAutomergeRun(ctx, repo, sha, expectedWorkflowPath, run, verifiedRuns) {
-			continue
+		if isIgnoredCheck(ignoredCheckNames, run.Name) {
+			if expectedWorkflowPath == "" && (run.Status != "completed" || run.Conclusion == nil) {
+				return checksFailed, fmt.Errorf("automerge-workflow-path is required to ignore pending check run %q", run.Name)
+			}
+			if gh.isVerifiedAutomergeRun(ctx, repo, sha, expectedWorkflowPath, run, verifiedRuns) {
+				continue
+			}
 		}
 		if run.Status != "completed" || run.Conclusion == nil {
 			pending = true

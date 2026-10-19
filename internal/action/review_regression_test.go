@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -165,5 +166,24 @@ func TestIgnoredCheckRequiresVerifiedWorkflowRun(t *testing.T) {
 				t.Fatalf("state=%s err=%v want %s", got, err, tt.want)
 			}
 		})
+	}
+}
+
+func TestIgnoredPendingCheckWithoutWorkflowPathFailsImmediately(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/project/commits/abc/status":
+			http.NotFound(w, r)
+		case "/repos/acme/project/commits/abc/check-runs":
+			_ = json.NewEncoder(w).Encode(checkRunsResponse{TotalCount: 1, CheckRuns: []checkRun{{ID: 1, Name: "automerge", Status: "in_progress"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", []string{"automerge"}, "")
+	if state != checksFailed || err == nil || !strings.Contains(err.Error(), "automerge-workflow-path") {
+		t.Fatalf("state=%s err=%v; want immediate workflow-path configuration error", state, err)
 	}
 }

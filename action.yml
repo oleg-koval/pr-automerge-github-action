@@ -30,7 +30,7 @@ inputs:
     description: Comma-separated exact check run names eligible for ignoring only when the workflow-run path, repository, head SHA and check suite are verified. Defaults to automerge.
     required: false
   automerge-workflow-path:
-    description: Expected repository-relative .github/workflows/*.yml path of this automerge workflow. Required to ignore its own check runs; without it no checks are ignored.
+    description: Expected repository-relative `.github/workflows/*.yml` path for this automerge workflow. Required to ignore its own check runs; a matching pending check without this path fails immediately with a configuration error.
     required: false
   dry-run:
     description: Log intended actions without commenting or merging.

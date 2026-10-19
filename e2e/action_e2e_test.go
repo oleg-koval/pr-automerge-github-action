@@ -19,29 +19,30 @@ import (
 )
 
 type fakeGitHub struct {
-	pr                        map[string]any
-	prResponses               []map[string]any
-	prCalls                   int
-	status                    map[string]any
-	ignoreCheckRunWriteErrors bool
-	checkRuns                 map[string]any
-	checkRunResponses         []map[string]any
-	checkRunCalls             int
-	comments                  []map[string]string
-	createdComment            string
-	merged                    bool
-	mergeCalls                int
-	mergePRNumbers            []int
-	mergeHeadSHA              string
-	mergeHeadChanged          bool
-	updatedBranch             bool
-	mergeStatus               int
-	updateStatus              int
-	openReviewComments        bool
-	reviewThreadResponses     []bool
-	reviewThreadCalls         int
-	reviewThreadCallTimes     []time.Time
-	mergeSafetyReadOrder      []string
+	pr                            map[string]any
+	prResponses                   []map[string]any
+	prCalls                       int
+	status                        map[string]any
+	ignoreCheckRunWriteErrors     bool
+	checkRuns                     map[string]any
+	checkRunResponses             []map[string]any
+	checkRunCalls                 int
+	comments                      []map[string]string
+	createdComment                string
+	merged                        bool
+	mergeCalls                    int
+	mergePRNumbers                []int
+	mergeHeadSHA                  string
+	mergeHeadChanged              bool
+	updatedBranch                 bool
+	mergeStatus                   int
+	updateStatus                  int
+	openReviewComments            bool
+	reviewThreadResponses         []bool
+	openReviewThreadAfterCheckRun int
+	reviewThreadCalls             int
+	reviewThreadCallTimes         []time.Time
+	mergeSafetyReadOrder          []string
 }
 
 func TestActionE2E(t *testing.T) {
@@ -50,46 +51,48 @@ func TestActionE2E(t *testing.T) {
 	mergeable := true
 	conflicted := false
 	tests := []struct {
-		name                         string
-		eventName                    string
-		actor                        string
-		mergeable                    *bool
-		mergeableState               string
-		statusState                  string
-		legacyStatusCount            int
-		checkConclusion              string
-		mergeStatus                  int
-		mergeHeadChanged             bool
-		updateStatus                 int
-		existingComments             []map[string]string
-		wantMerged                   bool
-		wantUpdatedBranch            bool
-		wantCommentPart              string
-		wantNoComment                bool
-		wantMergeComment             bool
-		includeCurrentRun            bool
-		includeOldAutomerge          bool
-		openReviewComments           bool
-		reviewThreadResponses        []bool
-		wantReviewThreadCalls        int
-		wantReviewInterval           time.Duration
-		wantNoAPIRequired            bool
-		oversizedCheckResponse       bool
-		eventHasCheckSuite           bool
-		eventPRNumbers               []int
-		wantMergeCalls               int
-		wantMergedPRNumbers          []int
-		wantError                    string
-		botLoginsInput               string
-		waitTimeout                  string
-		waitInterval                 string
-		headChangesOnRefresh         bool
-		prState                      string
-		prClosesAfterMergeFailure    bool
-		prClosesUnmergedAfterFailure bool
-		prNumber                     string
-		checksChangeOnRefresh        string
-		conflictHeadChanges          bool
+		name                          string
+		eventName                     string
+		actor                         string
+		mergeable                     *bool
+		mergeableState                string
+		statusState                   string
+		legacyStatusCount             int
+		checkConclusion               string
+		mergeStatus                   int
+		mergeHeadChanged              bool
+		updateStatus                  int
+		existingComments              []map[string]string
+		wantMerged                    bool
+		wantUpdatedBranch             bool
+		wantCommentPart               string
+		wantNoComment                 bool
+		wantMergeComment              bool
+		includeCurrentRun             bool
+		includeOldAutomerge           bool
+		openReviewComments            bool
+		reviewThreadResponses         []bool
+		openReviewThreadAfterCheckRun int
+		wantReviewThreadCalls         int
+		wantReviewInterval            time.Duration
+		wantNoAPIRequired             bool
+		oversizedCheckResponse        bool
+		eventHasCheckSuite            bool
+		eventPRNumbers                []int
+		wantMergeCalls                int
+		wantMergedPRNumbers           []int
+		wantError                     string
+		botLoginsInput                string
+		waitTimeout                   string
+		waitInterval                  string
+		headChangesOnRefresh          bool
+		prState                       string
+		prClosesAfterMergeFailure     bool
+		prClosesUnmergedAfterFailure  bool
+		prNumber                      string
+		checksChangeOnRefresh         string
+		checksChangeOnFinalRead       string
+		conflictHeadChanges           bool
 	}{
 		{
 			name:              "exits outside pull request events",
@@ -379,7 +382,9 @@ func TestActionE2E(t *testing.T) {
 			wantCommentPart: "returned 422",
 		},
 		{name: "checks become pending after refresh", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", checksChangeOnRefresh: "in_progress", wantMergeComment: true},
+		{name: "review threads are rechecked after the final check wait", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", openReviewThreadAfterCheckRun: 2, wantMergeCalls: 0},
 		{name: "checks become failed after refresh", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", checksChangeOnRefresh: "failure", wantCommentPart: "may be a breaking dependency or security update"},
+		{name: "final check reread blocks merge after thread reread", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", checksChangeOnFinalRead: "failure", wantCommentPart: "may be a breaking dependency or security update", wantMergeCalls: 0},
 		{name: "non-stale 409 escalates", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", mergeStatus: http.StatusConflict, wantMergeCalls: 1, wantCommentPart: "GitHub refused to merge"},
 		{name: "stale-head 409 skips escalation", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", mergeStatus: http.StatusConflict, conflictHeadChanges: true, wantMergeCalls: 1, wantMergeComment: true},
 		{
@@ -493,6 +498,13 @@ func TestActionE2E(t *testing.T) {
 					status = "completed"
 				}
 				checkRunResponses = []map[string]any{{"total_count": len(checkRuns), "check_runs": checkRuns}, {"total_count": 1, "check_runs": []map[string]any{{"id": 99, "name": "ci-new", "status": status, "conclusion": conclusion}}}}
+			} else if tt.checksChangeOnFinalRead != "" {
+				finalConclusion := tt.checksChangeOnFinalRead
+				checkRunResponses = []map[string]any{
+					{"total_count": len(checkRuns), "check_runs": checkRuns},
+					{"total_count": len(checkRuns), "check_runs": checkRuns},
+					{"total_count": 1, "check_runs": []map[string]any{{"id": 99, "name": "ci-final", "status": "completed", "conclusion": finalConclusion}}},
+				}
 			}
 
 			statuses := make([]map[string]any, 0, tt.legacyStatusCount)
@@ -510,16 +522,17 @@ func TestActionE2E(t *testing.T) {
 					"user":            map[string]string{"login": tt.actor},
 					"head":            map[string]string{"sha": "abc123"},
 				},
-				status:                    map[string]any{"state": tt.statusState, "total_count": len(statuses), "statuses": statuses},
-				checkRuns:                 map[string]any{"total_count": len(checkRuns), "check_runs": checkRuns},
-				checkRunResponses:         checkRunResponses,
-				ignoreCheckRunWriteErrors: tt.oversizedCheckResponse,
-				openReviewComments:        tt.openReviewComments,
-				reviewThreadResponses:     append([]bool(nil), tt.reviewThreadResponses...),
-				comments:                  append([]map[string]string(nil), tt.existingComments...),
-				mergeStatus:               tt.mergeStatus,
-				mergeHeadChanged:          tt.mergeHeadChanged,
-				updateStatus:              tt.updateStatus,
+				status:                        map[string]any{"state": tt.statusState, "total_count": len(statuses), "statuses": statuses},
+				checkRuns:                     map[string]any{"total_count": len(checkRuns), "check_runs": checkRuns},
+				checkRunResponses:             checkRunResponses,
+				ignoreCheckRunWriteErrors:     tt.oversizedCheckResponse,
+				openReviewComments:            tt.openReviewComments,
+				reviewThreadResponses:         append([]bool(nil), tt.reviewThreadResponses...),
+				openReviewThreadAfterCheckRun: tt.openReviewThreadAfterCheckRun,
+				comments:                      append([]map[string]string(nil), tt.existingComments...),
+				mergeStatus:                   tt.mergeStatus,
+				mergeHeadChanged:              tt.mergeHeadChanged,
+				updateStatus:                  tt.updateStatus,
 			}
 			fake.prResponses = []map[string]any{fake.pr}
 			if tt.conflictHeadChanges {
@@ -677,12 +690,15 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 			writeJSON(t, w, f.status)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/commits/abc123/check-runs":
 			f.mergeSafetyReadOrder = append(f.mergeSafetyReadOrder, "check-runs")
+			f.checkRunCalls++
+			if f.openReviewThreadAfterCheckRun > 0 && f.checkRunCalls >= f.openReviewThreadAfterCheckRun {
+				f.openReviewComments = true
+			}
 			if len(f.checkRunResponses) > 0 {
-				index := f.checkRunCalls
+				index := f.checkRunCalls - 1
 				if index >= len(f.checkRunResponses) {
 					index = len(f.checkRunResponses) - 1
 				}
-				f.checkRunCalls++
 				writeJSON(t, w, f.checkRunResponses[index])
 				return
 			}
