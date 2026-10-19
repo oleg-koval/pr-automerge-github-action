@@ -12,12 +12,12 @@ type eventPayload struct {
 	Repository  eventRepository   `json:"repository"`
 }
 
-func (p eventPayload) pullRequest() *eventPullRequest {
+func (p eventPayload) pullRequests() []eventPullRequest {
 	if p.PullRequest != nil {
-		return p.PullRequest
+		return []eventPullRequest{*p.PullRequest}
 	}
-	if p.CheckSuite != nil && len(p.CheckSuite.PullRequests) > 0 {
-		return &p.CheckSuite.PullRequests[0]
+	if p.CheckSuite != nil {
+		return p.CheckSuite.PullRequests
 	}
 	return nil
 }

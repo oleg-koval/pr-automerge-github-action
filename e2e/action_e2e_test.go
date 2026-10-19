@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ type fakeGitHub struct {
 	comments              []map[string]string
 	createdComment        string
 	merged                bool
+	mergeCalls            int
 	updatedBranch         bool
 	mergeStatus           int
 	updateStatus          int
@@ -64,6 +66,8 @@ func TestActionE2E(t *testing.T) {
 		wantReviewInterval        time.Duration
 		wantNoAPIRequired         bool
 		eventHasCheckSuite        bool
+		eventPRNumbers            []int
+		wantMergeCalls            int
 		botLoginsInput            string
 		waitTimeout               string
 		waitInterval              string
@@ -116,6 +120,21 @@ func TestActionE2E(t *testing.T) {
 			mergeStatus:        http.StatusOK,
 			eventHasCheckSuite: true,
 			wantMerged:         true,
+			wantMergeComment:   true,
+		},
+		{
+			name:               "merges every PR from check suite payload",
+			eventName:          "check_suite",
+			actor:              "dependabot[bot]",
+			mergeable:          &mergeable,
+			mergeableState:     "clean",
+			statusState:        "success",
+			checkConclusion:    "success",
+			mergeStatus:        http.StatusOK,
+			eventHasCheckSuite: true,
+			eventPRNumbers:     []int{7, 8},
+			wantMerged:         true,
+			wantMergeCalls:     2,
 			wantMergeComment:   true,
 		},
 		{
@@ -414,7 +433,7 @@ func TestActionE2E(t *testing.T) {
 			server := httptest.NewServer(fake.handler(t))
 			defer server.Close()
 
-			eventPath := writeEvent(t, tt.actor, tt.eventHasCheckSuite)
+			eventPath := writeEvent(t, tt.actor, tt.eventHasCheckSuite, tt.eventPRNumbers...)
 			botLoginsInput := tt.botLoginsInput
 			if botLoginsInput == "" {
 				botLoginsInput = "dependabot[bot],renovate[bot],snyk-bot"
@@ -438,7 +457,11 @@ func TestActionE2E(t *testing.T) {
 				t.Fatalf("Run() error = %v\nlogs:\n%s", err, logs.String())
 			}
 			if tt.wantMerged != fake.merged {
-				t.Fatalf("merged = %v, want %v\nlogs:\n%s", fake.merged, tt.wantMerged, logs.String())
+				t.Fatalf("merged = %v, want %v\\nlogs:\\n%s", fake.merged, tt.wantMerged, logs.String())
+			}
+			if tt.wantMergeCalls != 0 && fake.mergeCalls != tt.wantMergeCalls {
+				t.Fatalf("merge calls = %d, want %d", fake.mergeCalls, tt.wantMergeCalls)
+
 			}
 			if tt.wantUpdatedBranch != fake.updatedBranch {
 				t.Fatalf("updatedBranch = %v, want %v\nlogs:\n%s", fake.updatedBranch, tt.wantUpdatedBranch, logs.String())
@@ -480,18 +503,27 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/contents/.github/pr-bot-automerge.yml":
 			http.NotFound(w, r)
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls/7":
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/"):
+			prNumber, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/pulls/"))
+			if err != nil {
+				t.Fatalf("parse PR number from %q: %v", r.URL.Path, err)
+			}
 			responseIndex := f.prCalls
 			if responseIndex >= len(f.prResponses) {
 				responseIndex = len(f.prResponses) - 1
 			}
 			f.prCalls++
-			writeJSON(t, w, f.prResponses[responseIndex])
+			response := make(map[string]any, len(f.prResponses[responseIndex]))
+			for key, value := range f.prResponses[responseIndex] {
+				response[key] = value
+			}
+			response["number"] = prNumber
+			writeJSON(t, w, response)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/commits/abc123/status":
 			writeJSON(t, w, f.status)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/commits/abc123/check-runs":
 			writeJSON(t, w, f.checkRuns)
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/7/comments":
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
 			writeJSON(t, w, f.comments)
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 			var payload struct {
@@ -540,7 +572,7 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 					},
 				},
 			})
-		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/7/comments":
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
 			var payload map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode comment payload: %v", err)
@@ -548,7 +580,8 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 			f.createdComment = payload["body"]
 			w.WriteHeader(http.StatusCreated)
 			writeJSON(t, w, map[string]string{"body": f.createdComment})
-		case r.Method == http.MethodPut && r.URL.Path == "/repos/owner/repo/pulls/7/merge":
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/") && strings.HasSuffix(r.URL.Path, "/merge"):
+			f.mergeCalls++
 			if f.mergeStatus == 0 {
 				f.mergeStatus = http.StatusOK
 			}
@@ -577,25 +610,37 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 	}
 }
 
-func writeEvent(t *testing.T, actor string, checkSuite bool) string {
+func writeEvent(t *testing.T, actor string, checkSuite bool, numbers ...int) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "event.json")
-	pullRequest := map[string]any{
-		"number": 7,
-		"draft":  false,
-		"user":   map[string]string{"login": actor},
-		"head":   map[string]string{"sha": "abc123"},
+	makePullRequest := func(number int) map[string]any {
+		return map[string]any{
+			"number": number,
+			"draft":  false,
+			"user":   map[string]string{"login": actor},
+			"head":   map[string]string{"sha": "abc123"},
+		}
 	}
+	number := 7
+	if len(numbers) > 0 {
+		number = numbers[0]
+	}
+	pullRequest := makePullRequest(number)
 	payload := map[string]any{
 		"repository":   map[string]string{"full_name": "owner/repo"},
 		"pull_request": pullRequest,
 	}
 	if checkSuite {
+		pullRequests := make([]map[string]any, 0, len(numbers))
+		if len(numbers) == 0 {
+			numbers = []int{7}
+		}
+		for _, prNumber := range numbers {
+			pullRequests = append(pullRequests, makePullRequest(prNumber))
+		}
 		payload = map[string]any{
-			"repository": map[string]string{"full_name": "owner/repo"},
-			"check_suite": map[string]any{
-				"pull_requests": []map[string]any{pullRequest},
-			},
+			"repository":  map[string]string{"full_name": "owner/repo"},
+			"check_suite": map[string]any{"pull_requests": pullRequests},
 		}
 	}
 	data, err := json.Marshal(payload)

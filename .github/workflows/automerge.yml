@@ -7,6 +7,8 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  check_suite:
+    types: [completed]
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
@@ -16,12 +18,7 @@ on:
         required: false
         type: string
 
-permissions:
-  contents: write
-  pull-requests: write
-  checks: read
-  statuses: read
-  issues: write
+permissions: {}
 
 concurrency:
   group: automerge-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || inputs.pr-number || github.run_id }}
@@ -30,6 +27,8 @@ concurrency:
 jobs:
   discover:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.pr-number == '')
+    permissions:
+      pull-requests: read
     runs-on: ubuntu-latest
     outputs:
       pr-numbers: ${{ steps.list.outputs.pr-numbers }}
@@ -38,12 +37,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prs="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number --jq '[.[].number]')"
+          prs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" --jq '.[].number' | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber)')"
+          count="$(jq 'length' <<<"$prs")"
+          if (( count > 256 )); then
+            echo "Found $count open PRs, exceeding GitHub Actions' 256-job matrix limit; refusing to silently skip retries." >&2
+            exit 1
+          fi
           printf 'pr-numbers=%s\n' "$prs" >> "$GITHUB_OUTPUT"
 
   retry:
     needs: discover
     if: needs.discover.result == 'success' && needs.discover.outputs.pr-numbers != '[]'
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      statuses: read
+      issues: write
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -59,6 +69,12 @@ jobs:
 
   manual:
     if: github.event_name == 'workflow_dispatch' && inputs.pr-number != ''
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      statuses: read
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - uses: oleg-koval/pr-automerge-github-action@v1
@@ -70,6 +86,12 @@ jobs:
 
   automerge:
     if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      statuses: read
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - uses: oleg-koval/pr-automerge-github-action@v1

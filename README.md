@@ -14,13 +14,10 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  check_suite:
+    types: [completed]
 
-permissions:
-  contents: write
-  pull-requests: write
-  checks: read
-  statuses: read
-  issues: write
+permissions: {}
 
 concurrency:
   group: automerge-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || github.run_id }}
@@ -29,6 +26,12 @@ concurrency:
 jobs:
   automerge:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      statuses: read
+      issues: write
     steps:
       - uses: oleg-koval/pr-automerge-github-action@v1
         with:
@@ -73,7 +76,13 @@ ignored_check_names:
 
 ## Behavior
 
-The action exits successfully outside PR events and for closed or merged pull requests. It ignores PRs not opened by allowed bot logins and ignores draft PRs. It waits for pending checks by default, syncs behind PR branches with the target branch, then merges only when checks and statuses are successful, GitHub reports the PR as mergeable, and every review thread read by GraphQL is resolved. When review threads are open, the action re-checks them at `wait-interval` until they resolve or `wait-timeout` expires; review-thread polling is clamped to at least one second and backs off up to five minutes; set `wait-timeout: 0s` to fail fast. Because GitHub Actions does not expose a `pull_request_review_thread` workflow trigger, the sample workflow also runs a bounded scheduled retry every 10 minutes and passes each open PR through `pr-number`; the same input supports a manual retry. The action checks review threads both before its approval comment and immediately before the merge request. Enable GitHub branch protection's required conversation resolution on protected target branches as the atomic server-side merge boundary; the action cannot make a REST merge request and a concurrent new comment one transaction. Workflow concurrency is serialized per PR, and a merge race that finds the PR already closed is treated as success without an escalation comment. If the automerge job lives in the same workflow as validation jobs, make it depend on those jobs with `needs`; if validation lives in separate workflows, the built-in wait loop handles it.
+The action ignores closed, merged, draft, and non-allowlisted PRs. It waits for checks by default, updates branches behind their base, and only requests a merge when checks/statuses pass, GitHub reports the PR mergeable, and every review thread is resolved. It rechecks review threads immediately before requesting the merge. A merge race that finds the PR already closed is treated as success.
+
+GitHub Actions has no `pull_request_review_thread` trigger, so the example workflow retries every open PR every 10 minutes and supports manual retries with `pr-number`; it paginates discovery and fails loudly rather than silently truncating if more than the 256-job matrix limit is reached. If validation runs in the same workflow, use `needs` so automerge waits for it too. The scheduled retry handles checks from separate workflows.
+
+## Security and branch protection
+
+`pull_request_target` runs with the base repository's token and secrets. Never check out the PR head, execute PR-controlled scripts, or invoke other code supplied by the PR in this privileged workflow. Keep the bot allowlist narrow and grant write permissions only to the automerge job. Protect target branches with required status checks and required conversation resolution: API checks reduce risk, but GitHub branch protection is the server-side merge boundary for races between a check and the merge request. In production, pin the action to a reviewed full commit SHA; `@v1` in this example is a readability placeholder, not an immutable pin.
 
 If checks fail, the action treats the update as potentially breaking and mentions maintainers. If a Dependabot PR has a merge conflict, it comments `@dependabot rebase`. If another bot PR has a conflict, it mentions maintainers. Before merging, it comments what it is doing with attribution to this action and a small celebration GIF. Duplicate comments for the same PR head SHA and reason are suppressed.
 

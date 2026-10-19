@@ -28,21 +28,21 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	}
 
 	var payload eventPayload
-	var eventPR *eventPullRequest
+	var eventPRs []eventPullRequest
 	var err error
 	if syntheticEvent {
 		number, parseErr := strconv.Atoi(strings.TrimSpace(env.input("pr-number")))
 		if parseErr != nil || number <= 0 {
 			return fmt.Errorf("pr-number input is required for %s events", eventName)
 		}
-		eventPR = &eventPullRequest{Number: number}
+		eventPRs = []eventPullRequest{{Number: number}}
 	} else {
 		payload, err = loadEvent(env.get("GITHUB_EVENT_PATH"))
 		if err != nil {
 			return err
 		}
-		eventPR = payload.pullRequest()
-		if eventPR == nil {
+		eventPRs = payload.pullRequests()
+		if len(eventPRs) == 0 {
 			logger.Printf("event has no pull request payload")
 			return nil
 		}
@@ -60,6 +60,16 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 		return err
 	}
 
+	var processErrors []error
+	for _, eventPR := range eventPRs {
+		if err := processPullRequest(ctx, env, gh, cfg, repo, eventPR, logger); err != nil {
+			processErrors = append(processErrors, fmt.Errorf("process PR #%d: %w", eventPR.Number, err))
+		}
+	}
+	return errors.Join(processErrors...)
+}
+
+func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Config, repo string, eventPR eventPullRequest, logger *log.Logger) error {
 	pr, err := gh.getPullRequestWithMergeability(ctx, repo, eventPR.Number)
 	if err != nil {
 		return err
@@ -313,6 +323,15 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 	}
 	if status.State == "failure" || status.State == "error" {
 		return checksFailed, nil
+	}
+	for _, commit := range status.Statuses {
+		switch commit.State {
+		case "success":
+		case "pending":
+			return checksPending, nil
+		default:
+			return checksFailed, nil
+		}
 	}
 	seenRuns := 0
 	for _, run := range runs.CheckRuns {

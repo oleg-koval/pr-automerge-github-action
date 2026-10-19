@@ -68,8 +68,9 @@ type contentResponse struct {
 }
 
 type combinedStatus struct {
-	State    string         `json:"state"`
-	Statuses []commitStatus `json:"statuses"`
+	State      string         `json:"state"`
+	TotalCount int            `json:"total_count"`
+	Statuses   []commitStatus `json:"statuses"`
 }
 
 type commitStatus struct {
@@ -78,7 +79,8 @@ type commitStatus struct {
 }
 
 type checkRunsResponse struct {
-	CheckRuns []checkRun `json:"check_runs"`
+	TotalCount int        `json:"total_count"`
+	CheckRuns  []checkRun `json:"check_runs"`
 }
 
 type checkRun struct {
@@ -168,15 +170,40 @@ func escapePath(path string) string {
 }
 
 func (c *githubClient) getCombinedStatus(ctx context.Context, repo string, sha string) (combinedStatus, error) {
-	var status combinedStatus
-	err := c.request(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/status", repo, sha), nil, &status)
-	return status, err
+	var combined combinedStatus
+	for page := 1; ; page++ {
+		var current combinedStatus
+		path := fmt.Sprintf("/repos/%s/commits/%s/status?per_page=100&page=%d", repo, sha, page)
+		if err := c.request(ctx, http.MethodGet, path, nil, &current); err != nil {
+			return combinedStatus{}, err
+		}
+		if page == 1 {
+			combined.State = current.State
+			combined.TotalCount = current.TotalCount
+		}
+		combined.Statuses = append(combined.Statuses, current.Statuses...)
+		if len(current.Statuses) == 0 || len(combined.Statuses) >= combined.TotalCount {
+			return combined, nil
+		}
+	}
 }
 
 func (c *githubClient) getCheckRuns(ctx context.Context, repo string, sha string) (checkRunsResponse, error) {
-	var runs checkRunsResponse
-	err := c.request(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/commits/%s/check-runs", repo, sha), nil, &runs)
-	return runs, err
+	var combined checkRunsResponse
+	for page := 1; ; page++ {
+		var current checkRunsResponse
+		path := fmt.Sprintf("/repos/%s/commits/%s/check-runs?per_page=100&page=%d", repo, sha, page)
+		if err := c.request(ctx, http.MethodGet, path, nil, &current); err != nil {
+			return checkRunsResponse{}, err
+		}
+		if page == 1 {
+			combined.TotalCount = current.TotalCount
+		}
+		combined.CheckRuns = append(combined.CheckRuns, current.CheckRuns...)
+		if len(current.CheckRuns) == 0 || len(combined.CheckRuns) >= combined.TotalCount {
+			return combined, nil
+		}
+	}
 }
 
 func (c *githubClient) listComments(ctx context.Context, repo string, number int) ([]issueComment, error) {
