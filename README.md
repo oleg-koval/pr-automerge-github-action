@@ -4,7 +4,7 @@ Automerge pull requests opened by configured maintenance bots. The action is PR-
 
 ## Usage
 
-Copy the complete, security-scoped workflow from [`examples/workflow.yml`](examples/workflow.yml) to `.github/workflows/automerge.yml`. It fans out one job per PR (including each PR associated with a `check_suite` event), serializes runs per PR, and pins the action to the immutable v1.5.0 commit SHA. Update `maintainer-handles` for your repository.
+Copy the complete, security-scoped workflow from [`examples/workflow.yml`](examples/workflow.yml) to `.github/workflows/automerge.yml`. It fans out one job per PR (including each PR associated with a `check_suite` event), serializes runs per PR, and pins the action to the immutable reviewed commit SHA. Update `maintainer-handles` for your repository.
 
 ## Inputs
 
@@ -43,15 +43,15 @@ ignored_check_names:
 
 ## Behavior
 
-The action ignores closed, merged, draft, and non-allowlisted PRs. It waits for checks by default, updates branches behind their base, and only requests a merge when checks/statuses pass, GitHub reports the PR mergeable, and every review thread is resolved. It rechecks review threads immediately before requesting the merge. A merge race that finds the PR already closed is treated as success.
+The action ignores closed, merged, draft, and non-allowlisted PRs. It waits for checks by default, updates branches behind their base, and only requests a merge when checks/statuses pass, GitHub reports the PR mergeable, and every review thread is resolved. It rechecks review threads immediately before requesting the merge. If a merge request races with another actor, the action treats it as successful only when GitHub confirms the PR is merged.
 
 GitHub Actions has no `pull_request_review_thread` trigger, so the example workflow retries every open PR every 10 minutes and supports manual retries with `pr-number`; it paginates discovery and fails loudly rather than silently truncating if more than the 256-job matrix limit is reached. If validation runs in the same workflow, use `needs` so automerge waits for it too. The scheduled retry handles checks from separate workflows.
 
 ## Security and branch protection
 
-`pull_request_target` runs with the base repository's token and secrets. Never check out the PR head, execute PR-controlled scripts, or invoke other code supplied by the PR in this privileged workflow. Keep the bot allowlist narrow and grant write permissions only to the automerge job. Protect target branches with required status checks and required conversation resolution: API checks reduce risk, but GitHub branch protection is the server-side merge boundary for races between a check and the merge request. The example pins the action to the reviewed v1.5.0 commit SHA; update that full SHA only after reviewing a release.
+`pull_request_target` runs with the base repository's token and secrets. Never check out the PR head, execute PR-controlled scripts, or invoke other code supplied by the PR in this privileged workflow. Keep the bot allowlist narrow and grant write permissions only to the automerge job. Protect target branches with required status checks and required conversation resolution: API checks reduce risk, but GitHub branch protection is the server-side merge boundary for races between a check and the merge request. The example pins the action to the immutable reviewed commit SHA; update that full SHA only after reviewing a release.
 
-If checks fail, the action treats the update as potentially breaking and mentions maintainers. If a Dependabot PR has a merge conflict, it comments `@dependabot rebase`. If another bot PR has a conflict, it mentions maintainers. Before merging, it comments what it is doing with attribution to this action and a small celebration GIF. Duplicate comments for the same PR head SHA and reason are suppressed.
+If checks fail, the action treats the update as potentially breaking and mentions maintainers. If a Dependabot PR has a merge conflict, it comments `@dependabot rebase`. If another bot PR has a conflict, it mentions maintainers. Before attempting a merge, it comments on the passing checks with action attribution; that notice is not a confirmation that the merge succeeded. Duplicate comments for the same PR head SHA and reason are suppressed.
 
 ## Release
 

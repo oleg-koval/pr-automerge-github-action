@@ -86,6 +86,28 @@ func TestEvaluateChecksIgnoresMatrixSuffixForIgnoredCheck(t *testing.T) {
 	}
 }
 
+func TestEvaluateChecksIgnoresExactNonNumericMatrixName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/project/commits/abc/status":
+			_, _ = fmt.Fprint(w, `{"state":"success","total_count":1,"statuses":[{"context":"ci","state":"success"}]}`)
+		case "/repos/acme/project/commits/abc/check-runs":
+			_, _ = fmt.Fprint(w, `{"total_count":1,"check_runs":[{"id":2,"name":"automerge (ubuntu-latest)","status":"completed","conclusion":"cancelled"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", "", []string{"automerge (ubuntu-latest)"})
+	if err != nil {
+		t.Fatalf("evaluateChecks() error = %v", err)
+	}
+	if state != checksPassed {
+		t.Fatalf("evaluateChecks() = %q, want %q", state, checksPassed)
+	}
+}
+
 func TestEvaluateChecksDoesNotInferIgnoredMatrixCheckFromBaseName(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

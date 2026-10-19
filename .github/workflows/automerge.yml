@@ -83,9 +83,10 @@ jobs:
       group: automerge-${{ matrix.pr-number }}
       cancel-in-progress: false
     steps:
-      - uses: oleg-koval/pr-automerge-github-action@433e6219c932653289461412847a9d763b2944b3 # reviewed matrix and pagination fixes
+      - uses: oleg-koval/pr-automerge-github-action@c47784c39f0f0df6ad69ba3393ee9743ace531b2 # reviewed merge and check hardening
         with:
           github-token: ${{ github.token }}
           maintainer-handles: oleg-koval
           merge-method: squash
+          ignored-check-names: automerge,automerge (${{ matrix.pr-number }})
           pr-number: ${{ matrix.pr-number }}
