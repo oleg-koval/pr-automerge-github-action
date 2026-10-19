@@ -27,7 +27,10 @@ inputs:
     description: Initial poll interval while waiting for checks or open review threads; review-thread polling is clamped to one second and backs off up to five minutes. Use Go duration syntax, for example 30s.
     required: false
   ignored-check-names:
-    description: Comma-separated exact check run names ignored while deciding merge readiness. Defaults to automerge. Matrix-expanded names must be listed exactly.
+    description: Comma-separated exact check run names eligible for ignoring only when the workflow-run path, repository, head SHA and check suite are verified. Defaults to automerge.
+    required: false
+  automerge-workflow-path:
+    description: Expected repository-relative .github/workflows/*.yml path of this automerge workflow. Required to ignore its own check runs; without it no checks are ignored.
     required: false
   dry-run:
     description: Log intended actions without commenting or merging.

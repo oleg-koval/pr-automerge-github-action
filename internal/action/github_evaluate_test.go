@@ -31,7 +31,7 @@ func TestEvaluateChecksFailsOnLaterStatusPage(t *testing.T) {
 	defer server.Close()
 
 	client := newGitHubClient(server.URL, "")
-	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", "", nil)
+	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", nil, "")
 	if err != nil {
 		t.Fatalf("evaluateChecks() error = %v", err)
 	}
@@ -40,7 +40,7 @@ func TestEvaluateChecksFailsOnLaterStatusPage(t *testing.T) {
 	}
 }
 
-func TestEvaluateChecksUsesLatestStatusAndCheckRunPerName(t *testing.T) {
+func TestEvaluateChecksKeepsOlderFailuresFromSameProducer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/project/commits/abc/status":
@@ -54,16 +54,16 @@ func TestEvaluateChecksUsesLatestStatusAndCheckRunPerName(t *testing.T) {
 	defer server.Close()
 
 	client := newGitHubClient(server.URL, "")
-	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", "", nil)
+	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", nil, "")
 	if err != nil {
 		t.Fatalf("evaluateChecks() error = %v", err)
 	}
-	if state != checksPassed {
-		t.Fatalf("evaluateChecks() = %q, want %q", state, checksPassed)
+	if state != checksFailed {
+		t.Fatalf("evaluateChecks() = %q, want %q", state, checksFailed)
 	}
 }
 
-func TestEvaluateChecksIgnoresMatrixSuffixForIgnoredCheck(t *testing.T) {
+func TestEvaluateChecksDoesNotIgnoreUnverifiedMatrixCheck(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/project/commits/abc/status":
@@ -77,12 +77,12 @@ func TestEvaluateChecksIgnoresMatrixSuffixForIgnoredCheck(t *testing.T) {
 	defer server.Close()
 
 	client := newGitHubClient(server.URL, "")
-	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", "", []string{"automerge (42)"})
+	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", []string{"automerge (42)"}, "")
 	if err != nil {
 		t.Fatalf("evaluateChecks() error = %v", err)
 	}
-	if state != checksPassed {
-		t.Fatalf("evaluateChecks() = %q, want %q", state, checksPassed)
+	if state != checksFailed {
+		t.Fatalf("evaluateChecks() = %q, want %q", state, checksFailed)
 	}
 }
 
@@ -99,12 +99,12 @@ func TestEvaluateChecksIgnoresExactNonNumericMatrixName(t *testing.T) {
 	}))
 	defer server.Close()
 
-	state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", "", []string{"automerge (ubuntu-latest)"})
+	state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", []string{"automerge (ubuntu-latest)"}, "")
 	if err != nil {
 		t.Fatalf("evaluateChecks() error = %v", err)
 	}
-	if state != checksPassed {
-		t.Fatalf("evaluateChecks() = %q, want %q", state, checksPassed)
+	if state != checksFailed {
+		t.Fatalf("evaluateChecks() = %q, want %q", state, checksFailed)
 	}
 }
 
@@ -122,7 +122,7 @@ func TestEvaluateChecksDoesNotInferIgnoredMatrixCheckFromBaseName(t *testing.T) 
 	defer server.Close()
 
 	client := newGitHubClient(server.URL, "")
-	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", "", []string{"automerge"})
+	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", []string{"automerge"}, "")
 	if err != nil {
 		t.Fatalf("evaluateChecks() error = %v", err)
 	}
@@ -171,7 +171,7 @@ func TestEvaluateChecksDoesNotCollapseDifferentProducers(t *testing.T) {
 			}))
 			defer server.Close()
 
-			state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", "", nil)
+			state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", nil, "")
 			if err != nil {
 				t.Fatalf("evaluateChecks() error = %v", err)
 			}
@@ -200,21 +200,6 @@ func TestIsIgnoredCheckRequiresExactName(t *testing.T) {
 	}
 }
 
-func TestIsCurrentRunRequiresCompleteRunIDSegment(t *testing.T) {
-	for _, tt := range []struct {
-		url  string
-		want bool
-	}{
-		{url: "https://github.com/acme/project/actions/runs/123/job/456", want: true},
-		{url: "https://github.com/acme/project/actions/runs/1234/job/456", want: false},
-		{url: "https://github.com/acme/project/actions/runs/1234?redirect=/actions/runs/123", want: false},
-	} {
-		if got := isCurrentRun(checkRun{DetailsURL: tt.url}, "123"); got != tt.want {
-			t.Errorf("isCurrentRun(%q, 123) = %v, want %v", tt.url, got, tt.want)
-		}
-	}
-}
-
 func TestEvaluateChecksTreatsChangingPaginationAsPending(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/acme/project/commits/abc/status" {
@@ -233,7 +218,7 @@ func TestEvaluateChecksTreatsChangingPaginationAsPending(t *testing.T) {
 	defer server.Close()
 
 	client := newGitHubClient(server.URL, "")
-	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", "", nil)
+	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", nil, "")
 	if err != nil {
 		t.Fatalf("evaluateChecks() error = %v, want a retryable pending result", err)
 	}
@@ -242,7 +227,7 @@ func TestEvaluateChecksTreatsChangingPaginationAsPending(t *testing.T) {
 	}
 }
 
-func TestEvaluateChecksUsesLatestStatusesAndRunsAcrossPages(t *testing.T) {
+func TestEvaluateChecksKeepsFailuresAcrossPages(t *testing.T) {
 	latestStatusTime := time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC)
 	olderStatusTime := latestStatusTime.Add(-time.Hour)
 	statusPage := make([]commitStatus, 100)
@@ -284,11 +269,11 @@ func TestEvaluateChecksUsesLatestStatusesAndRunsAcrossPages(t *testing.T) {
 	defer server.Close()
 
 	client := newGitHubClient(server.URL, "")
-	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", "", nil)
+	state, err := evaluateChecks(context.Background(), client, "acme/project", "abc", nil, "")
 	if err != nil {
 		t.Fatalf("evaluateChecks() error = %v", err)
 	}
-	if state != checksPassed {
-		t.Fatalf("evaluateChecks() = %q, want %q", state, checksPassed)
+	if state != checksFailed {
+		t.Fatalf("evaluateChecks() = %q, want %q", state, checksFailed)
 	}
 }

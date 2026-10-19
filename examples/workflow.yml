@@ -69,6 +69,7 @@ jobs:
     needs: discover
     if: needs.discover.result == 'success' && needs.discover.outputs.pr-numbers != '[]'
     permissions:
+      actions: read
       contents: write
       pull-requests: write
       checks: read
@@ -88,4 +89,5 @@ jobs:
           github-token: ${{ github.token }}
           maintainer-handles: oleg-koval,octocat
           ignored-check-names: automerge,automerge (${{ matrix.pr-number }})
+          automerge-workflow-path: .github/workflows/automerge.yml
           pr-number: ${{ matrix.pr-number }}

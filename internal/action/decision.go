@@ -114,7 +114,7 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 		return nil
 	}
 
-	state, err := waitForChecks(ctx, gh, cfg, repo, pr.Head.SHA, env.get("GITHUB_RUN_ID"), logger)
+	state, err := waitForChecks(ctx, gh, cfg, repo, pr.Head.SHA, logger)
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,6 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 		logger.Printf("skip PR #%d because its refreshed merge state is no longer safe: mergeable=%v state=%s", pr.Number, latestPR.Mergeable, latestPR.MergeableState)
 		return nil
 	}
-
 	// Keep one final review-thread read immediately before the merge request.
 	openReviewComments, err = gh.hasOpenReviewComments(ctx, repo, pr.Number)
 	if err != nil {
@@ -215,18 +214,34 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 		return nil
 	}
 
+	// Re-evaluate checks after all other reads so the state used for merge is
+	// as fresh as possible. The merge request also carries the checked head SHA.
+	state, err = waitForChecks(ctx, gh, cfg, repo, latestPR.Head.SHA, logger)
+	if err != nil {
+		return err
+	}
+	if state == checksPending {
+		logger.Printf("skip PR #%d because checks are pending before merge", pr.Number)
+		return nil
+	}
+	if state == checksFailed {
+		body := maintainerComment(cfg, pr, "failed-checks", "Checks failed for this maintenance bot PR. This may be a breaking dependency or security update and needs maintainer review.")
+		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+	}
+
 	if cfg.DryRun {
 		logger.Printf("dry run: would merge PR #%d with method %s", pr.Number, cfg.MergeMethod)
 		return nil
 	}
 	if err := gh.mergePullRequest(ctx, repo, pr.Number, cfg.MergeMethod, pr.Head.SHA); err != nil {
-		if errors.Is(err, errMergeHeadChanged) {
-			logger.Printf("skip PR #%d because its head changed before merge; it can be retried on a later event", pr.Number)
-			return nil
-		}
 		latestPR, stateErr := gh.getPullRequest(ctx, repo, pr.Number)
 		if stateErr == nil && latestPR.Merged {
 			logger.Printf("PR #%d is already merged after a concurrent merge; treating merge as successful", pr.Number)
+			return nil
+		}
+		var apiErr *githubAPIError
+		if errors.As(err, &apiErr) && apiErr.statusCode == 409 && stateErr == nil && latestPR.Head.SHA != "" && latestPR.Head.SHA != pr.Head.SHA {
+			logger.Printf("skip PR #%d because its head changed before merge; it can be retried on a later event", pr.Number)
 			return nil
 		}
 		body := maintainerComment(cfg, pr, "merge-failed", "GitHub refused to merge this maintenance bot PR. Please review it manually.\n\nError:\n\n```\n"+err.Error()+"\n```")
@@ -315,10 +330,10 @@ func waitForReviewRetry(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo string, sha string, currentRunID string, logger *log.Logger) (checkState, error) {
+func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo string, sha string, logger *log.Logger) (checkState, error) {
 	deadline := time.Now().Add(cfg.WaitTimeout)
 	for {
-		state, err := evaluateChecks(ctx, gh, repo, sha, currentRunID, cfg.IgnoredCheckNames)
+		state, err := evaluateChecks(ctx, gh, repo, sha, cfg.IgnoredCheckNames, cfg.AutomergeWorkflowPath)
 		if err != nil || state != checksPending || cfg.WaitTimeout == 0 || time.Now().After(deadline) {
 			return state, err
 		}
@@ -331,17 +346,7 @@ func waitForChecks(ctx context.Context, gh *githubClient, cfg Config, repo strin
 	}
 }
 
-type statusIdentity struct {
-	context  string
-	producer string
-}
-
-type checkRunIdentity struct {
-	name     string
-	producer string
-}
-
-func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, currentRunID string, ignoredCheckNames []string) (checkState, error) {
+func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha string, ignoredCheckNames []string, expectedWorkflowPath string) (checkState, error) {
 	status, err := gh.getCombinedStatus(ctx, repo, sha)
 	if err != nil && !isOptionalAPIError(err) {
 		if errors.Is(err, errPaginationChanged) {
@@ -359,99 +364,71 @@ func evaluateChecks(ctx context.Context, gh *githubClient, repo string, sha stri
 	if len(status.Statuses) == 0 && (status.State == "failure" || status.State == "error") {
 		return checksFailed, nil
 	}
-	latestStatuses := make(map[statusIdentity]commitStatus, len(status.Statuses))
-	for index, commit := range status.Statuses {
-		key := statusIdentity{context: commit.Context, producer: statusProducer(commit, index)}
-		latest, exists := latestStatuses[key]
-		if !exists || commit.CreatedAt.After(latest.CreatedAt) || (commit.CreatedAt.Equal(latest.CreatedAt) && commit.ID > latest.ID) {
-			latestStatuses[key] = commit
-		}
-	}
-	statusesPending := false
-	for _, commit := range latestStatuses {
+	pending := false
+	failed := false
+	for _, commit := range status.Statuses {
 		switch commit.State {
 		case "success":
 		case "pending":
-			statusesPending = true
+			pending = true
 		default:
-			return checksFailed, nil
+			failed = true
 		}
 	}
-	if statusesPending {
+	verifiedRuns := make(map[int64]bool)
+	if len(runs.CheckRuns) == 0 && len(status.Statuses) == 0 {
 		return checksPending, nil
 	}
-	latestRuns := make(map[checkRunIdentity]checkRun, len(runs.CheckRuns))
-	for index, run := range runs.CheckRuns {
-		if isCurrentRun(run, currentRunID) || isIgnoredCheck(ignoredCheckNames, run.Name) {
+	for _, run := range runs.CheckRuns {
+		if isIgnoredCheck(ignoredCheckNames, run.Name) && gh.isVerifiedAutomergeRun(ctx, repo, sha, expectedWorkflowPath, run, verifiedRuns) {
 			continue
 		}
-		key := checkRunIdentity{name: run.Name, producer: checkRunProducer(run, index)}
-		latest, exists := latestRuns[key]
-		if !exists || run.ID > latest.ID {
-			latestRuns[key] = run
-		}
-	}
-	if len(latestRuns) == 0 && len(status.Statuses) == 0 {
-		return checksPending, nil
-	}
-	runsPending := false
-	for _, run := range latestRuns {
 		if run.Status != "completed" || run.Conclusion == nil {
-			runsPending = true
+			pending = true
 			continue
 		}
 		if !allowedConclusion(*run.Conclusion) {
-			return checksFailed, nil
+			failed = true
 		}
 	}
-	if runsPending {
+	if failed {
+		return checksFailed, nil
+	}
+	if pending {
 		return checksPending, nil
 	}
 	return checksPassed, nil
 }
 
+func (c *githubClient) isVerifiedAutomergeRun(ctx context.Context, repo, sha, workflowPath string, check checkRun, cache map[int64]bool) bool {
+	if workflowPath == "" || check.CheckSuite == nil || check.CheckSuite.ID == 0 {
+		return false
+	}
+	u, err := url.Parse(check.DetailsURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 7 || parts[0]+"/"+parts[1] != repo || parts[2] != "actions" || parts[3] != "runs" || parts[5] != "job" {
+		return false
+	}
+	id, err := strconv.ParseInt(parts[4], 10, 64)
+	if err != nil || id <= 0 {
+		return false
+	}
+	if valid, ok := cache[check.ID]; ok && check.ID != 0 {
+		return valid
+	}
+	run, err := c.getWorkflowRun(ctx, repo, id)
+	valid := err == nil && run.ID == id && run.CheckSuiteID == check.CheckSuite.ID && run.HeadSHA == sha && run.Repository.FullName == repo && strings.SplitN(run.Path, "@", 2)[0] == workflowPath
+	if check.ID != 0 {
+		cache[check.ID] = valid
+	}
+	return valid
+}
+
 func isOptionalAPIError(err error) bool {
 	return err == errNotFound
-}
-
-func statusProducer(status commitStatus, index int) string {
-	if status.Creator.ID != 0 {
-		return fmt.Sprintf("user-id:%d", status.Creator.ID)
-	}
-	if status.Creator.Login != "" {
-		return "user-login:" + strings.ToLower(status.Creator.Login)
-	}
-	if status.ID != 0 {
-		return fmt.Sprintf("status-id:%d", status.ID)
-	}
-	return fmt.Sprintf("unknown-status:%d", index)
-}
-
-func checkRunProducer(run checkRun, index int) string {
-	if run.App != nil && run.App.ID != 0 {
-		return fmt.Sprintf("app-id:%d", run.App.ID)
-	}
-	if run.ID != 0 {
-		return fmt.Sprintf("check-run-id:%d", run.ID)
-	}
-	return fmt.Sprintf("unknown-check-run:%d", index)
-}
-
-func isCurrentRun(run checkRun, currentRunID string) bool {
-	if currentRunID == "" {
-		return false
-	}
-	parsedURL, err := url.Parse(run.DetailsURL)
-	if err != nil {
-		return false
-	}
-	parts := strings.Split(strings.Trim(parsedURL.Path, "/"), "/")
-	for index := 0; index+2 < len(parts); index++ {
-		if parts[index] == "actions" && parts[index+1] == "runs" && parts[index+2] == currentRunID {
-			return true
-		}
-	}
-	return false
 }
 
 func isIgnoredCheck(ignored []string, name string) bool {

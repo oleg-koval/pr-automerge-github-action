@@ -71,7 +71,7 @@ func TestEvaluateChecksLatestFailureAndPendingAcrossPages(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(response)
 			}))
 			defer server.Close()
-			state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", "", nil)
+			state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", nil, "")
 			if err != nil {
 				t.Fatalf("evaluateChecks() error = %v", err)
 			}
@@ -82,7 +82,7 @@ func TestEvaluateChecksLatestFailureAndPendingAcrossPages(t *testing.T) {
 	}
 }
 
-func TestEvaluateChecksUsesStatusIDForSameTimestampTie(t *testing.T) {
+func TestEvaluateChecksSameTimestampDoesNotHideFailure(t *testing.T) {
 	createdAt := "2026-10-19T09:00:00Z"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -95,11 +95,11 @@ func TestEvaluateChecksUsesStatusIDForSameTimestampTie(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", "", nil)
+	state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", nil, "")
 	if err != nil {
 		t.Fatalf("evaluateChecks() error = %v", err)
 	}
-	if state != checksPassed {
-		t.Fatalf("evaluateChecks() = %q, want %q", state, checksPassed)
+	if state != checksFailed {
+		t.Fatalf("evaluateChecks() = %q, want %q", state, checksFailed)
 	}
 }

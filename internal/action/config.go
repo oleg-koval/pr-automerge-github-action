@@ -20,6 +20,7 @@ type Config struct {
 	WaitTimeout             time.Duration `yaml:"wait_timeout"`
 	WaitInterval            time.Duration `yaml:"wait_interval"`
 	IgnoredCheckNames       []string      `yaml:"ignored_check_names"`
+	AutomergeWorkflowPath   string        `yaml:"automerge_workflow_path"`
 	DryRun                  bool          `yaml:"dry_run"`
 }
 
@@ -70,6 +71,12 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 	}
 	if value := env.input("ignored-check-names"); value != "" {
 		cfg.IgnoredCheckNames = splitCSV(value)
+	}
+	if value := env.input("automerge-workflow-path"); value != "" {
+		cfg.AutomergeWorkflowPath = value
+	}
+	if cfg.AutomergeWorkflowPath != "" && (!strings.HasPrefix(cfg.AutomergeWorkflowPath, ".github/workflows/") || !strings.HasSuffix(cfg.AutomergeWorkflowPath, ".yml") && !strings.HasSuffix(cfg.AutomergeWorkflowPath, ".yaml") || strings.Contains(cfg.AutomergeWorkflowPath, "..")) {
+		return Config{}, fmt.Errorf("invalid automerge-workflow-path %q", cfg.AutomergeWorkflowPath)
 	}
 	if cfg.DependabotRebaseComment == "" {
 		cfg.DependabotRebaseComment = defaultDependabotRebaseComment
@@ -144,6 +151,9 @@ func mergeConfig(base Config, override Config) Config {
 	}
 	if len(override.IgnoredCheckNames) > 0 {
 		base.IgnoredCheckNames = override.IgnoredCheckNames
+	}
+	if override.AutomergeWorkflowPath != "" {
+		base.AutomergeWorkflowPath = override.AutomergeWorkflowPath
 	}
 	if override.DryRun {
 		base.DryRun = true

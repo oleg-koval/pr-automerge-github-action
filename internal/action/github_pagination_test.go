@@ -44,8 +44,8 @@ func TestGetCheckRunsPaginatesUntilLastPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getCheckRuns() error = %v", err)
 	}
-	if calls != 2 {
-		t.Fatalf("request count = %d, want 2 pages", calls)
+	if calls != 4 {
+		t.Fatalf("request count = %d, want two full 2-page scans", calls)
 	}
 	if len(runs.CheckRuns) != 101 {
 		t.Fatalf("check run count = %d, want 101", len(runs.CheckRuns))
@@ -87,8 +87,8 @@ func TestGetCombinedStatusPaginatesStatuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getCombinedStatus() error = %v", err)
 	}
-	if calls != 2 {
-		t.Fatalf("request count = %d, want 2 pages", calls)
+	if calls != 4 {
+		t.Fatalf("request count = %d, want two full 2-page scans", calls)
 	}
 	if len(status.Statuses) != 101 || status.Statuses[100].Context != "later" || status.Statuses[100].State != "failure" {
 		t.Fatalf("later-page failing status was not preserved: %#v", status.Statuses)

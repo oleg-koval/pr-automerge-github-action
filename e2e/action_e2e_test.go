@@ -25,6 +25,8 @@ type fakeGitHub struct {
 	status                    map[string]any
 	ignoreCheckRunWriteErrors bool
 	checkRuns                 map[string]any
+	checkRunResponses         []map[string]any
+	checkRunCalls             int
 	comments                  []map[string]string
 	createdComment            string
 	merged                    bool
@@ -39,6 +41,7 @@ type fakeGitHub struct {
 	reviewThreadResponses     []bool
 	reviewThreadCalls         int
 	reviewThreadCallTimes     []time.Time
+	mergeSafetyReadOrder      []string
 }
 
 func TestActionE2E(t *testing.T) {
@@ -85,6 +88,8 @@ func TestActionE2E(t *testing.T) {
 		prClosesAfterMergeFailure    bool
 		prClosesUnmergedAfterFailure bool
 		prNumber                     string
+		checksChangeOnRefresh        string
+		conflictHeadChanges          bool
 	}{
 		{
 			name:              "exits outside pull request events",
@@ -373,6 +378,10 @@ func TestActionE2E(t *testing.T) {
 			wantMergeCalls:  1,
 			wantCommentPart: "returned 422",
 		},
+		{name: "checks become pending after refresh", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", checksChangeOnRefresh: "in_progress", wantMergeComment: true},
+		{name: "checks become failed after refresh", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", checksChangeOnRefresh: "failure", wantCommentPart: "may be a breaking dependency or security update"},
+		{name: "non-stale 409 escalates", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", mergeStatus: http.StatusConflict, wantMergeCalls: 1, wantCommentPart: "GitHub refused to merge"},
+		{name: "stale-head 409 skips escalation", eventName: "pull_request_target", actor: "dependabot[bot]", mergeable: &mergeable, mergeableState: "clean", statusState: "success", checkConclusion: "success", mergeStatus: http.StatusConflict, conflictHeadChanges: true, wantMergeCalls: 1, wantMergeComment: true},
 		{
 			name:             "skips merge when head changes after final read",
 			eventName:        "pull_request_target",
@@ -383,7 +392,7 @@ func TestActionE2E(t *testing.T) {
 			checkConclusion:  "success",
 			mergeHeadChanged: true,
 			wantMergeCalls:   1,
-			wantCommentPart:  "does not confirm that a merge occurred.",
+			wantCommentPart:  "GitHub refused to merge",
 		},
 		{
 			name:                      "treats concurrent merge as success",
@@ -456,6 +465,8 @@ func TestActionE2E(t *testing.T) {
 			}
 			if tt.includeCurrentRun {
 				checkRuns = append(checkRuns, map[string]any{
+					"id":          321,
+					"check_suite": map[string]int64{"id": 88},
 					"name":        "automerge",
 					"status":      "in_progress",
 					"conclusion":  nil,
@@ -464,11 +475,24 @@ func TestActionE2E(t *testing.T) {
 			}
 			if tt.includeOldAutomerge {
 				checkRuns = append(checkRuns, map[string]any{
+					"id":          322,
+					"check_suite": map[string]int64{"id": 88},
 					"name":        "automerge",
 					"status":      "completed",
 					"conclusion":  "cancelled",
 					"details_url": "https://github.com/owner/repo/actions/runs/999999/job/789",
 				})
+			}
+
+			var checkRunResponses []map[string]any
+			if tt.checksChangeOnRefresh != "" {
+				conclusion := any(nil)
+				status := "in_progress"
+				if tt.checksChangeOnRefresh != "in_progress" {
+					conclusion = tt.checksChangeOnRefresh
+					status = "completed"
+				}
+				checkRunResponses = []map[string]any{{"total_count": len(checkRuns), "check_runs": checkRuns}, {"total_count": 1, "check_runs": []map[string]any{{"id": 99, "name": "ci-new", "status": status, "conclusion": conclusion}}}}
 			}
 
 			statuses := make([]map[string]any, 0, tt.legacyStatusCount)
@@ -488,6 +512,7 @@ func TestActionE2E(t *testing.T) {
 				},
 				status:                    map[string]any{"state": tt.statusState, "total_count": len(statuses), "statuses": statuses},
 				checkRuns:                 map[string]any{"total_count": len(checkRuns), "check_runs": checkRuns},
+				checkRunResponses:         checkRunResponses,
 				ignoreCheckRunWriteErrors: tt.oversizedCheckResponse,
 				openReviewComments:        tt.openReviewComments,
 				reviewThreadResponses:     append([]bool(nil), tt.reviewThreadResponses...),
@@ -497,6 +522,14 @@ func TestActionE2E(t *testing.T) {
 				updateStatus:              tt.updateStatus,
 			}
 			fake.prResponses = []map[string]any{fake.pr}
+			if tt.conflictHeadChanges {
+				changedPR := make(map[string]any, len(fake.pr))
+				for key, value := range fake.pr {
+					changedPR[key] = value
+				}
+				changedPR["head"] = map[string]string{"sha": "newhead"}
+				fake.prResponses = []map[string]any{fake.pr, fake.pr, changedPR}
+			}
 			if tt.headChangesOnRefresh {
 				refreshedPR := make(map[string]any, len(fake.pr))
 				for key, value := range fake.pr {
@@ -536,6 +569,7 @@ func TestActionE2E(t *testing.T) {
 				"INPUT_WAIT_TIMEOUT=" + valueOrTest(tt.waitTimeout, "0s"),
 				"INPUT_WAIT_INTERVAL=" + valueOrTest(tt.waitInterval, "1ms"),
 				"INPUT_PR_NUMBER=" + tt.prNumber,
+				"INPUT_AUTOMERGE_WORKFLOW_PATH=.github/workflows/automerge.yml",
 			}
 			var logs strings.Builder
 			err := action.Run(context.Background(), env, log.New(&logs, "", 0))
@@ -556,6 +590,22 @@ func TestActionE2E(t *testing.T) {
 			}
 			if tt.wantMerged != fake.merged {
 				t.Fatalf("merged = %v, want %v\\nlogs:\\n%s", fake.merged, tt.wantMerged, logs.String())
+			}
+			if fake.merged {
+				lastIndex := func(want string) int {
+					for index := len(fake.mergeSafetyReadOrder) - 1; index >= 0; index-- {
+						if fake.mergeSafetyReadOrder[index] == want {
+							return index
+						}
+					}
+					return -1
+				}
+				lastReviewRead := lastIndex("review-threads")
+				lastCheckRead := lastIndex("check-runs")
+				lastMerge := lastIndex("merge")
+				if lastReviewRead < 0 || lastCheckRead <= lastReviewRead || lastMerge <= lastCheckRead {
+					t.Fatalf("final safety reads are not ordered review-threads < check-runs < merge: %v", fake.mergeSafetyReadOrder)
+				}
 			}
 			if fake.mergeCalls > 0 && fake.mergeHeadSHA != "abc123" {
 				t.Fatalf("merge head SHA = %q, want checked SHA abc123", fake.mergeHeadSHA)
@@ -626,6 +676,16 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/commits/abc123/status":
 			writeJSON(t, w, f.status)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/commits/abc123/check-runs":
+			f.mergeSafetyReadOrder = append(f.mergeSafetyReadOrder, "check-runs")
+			if len(f.checkRunResponses) > 0 {
+				index := f.checkRunCalls
+				if index >= len(f.checkRunResponses) {
+					index = len(f.checkRunResponses) - 1
+				}
+				f.checkRunCalls++
+				writeJSON(t, w, f.checkRunResponses[index])
+				return
+			}
 			if f.ignoreCheckRunWriteErrors {
 				data, err := json.Marshal(f.checkRuns)
 				if err != nil {
@@ -635,9 +695,16 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 			} else {
 				writeJSON(t, w, f.checkRuns)
 			}
+		case r.Method == http.MethodGet && (r.URL.Path == "/repos/owner/repo/actions/runs/123456" || r.URL.Path == "/repos/owner/repo/actions/runs/999999"):
+			id := 123456
+			if strings.HasSuffix(r.URL.Path, "999999") {
+				id = 999999
+			}
+			writeJSON(t, w, map[string]any{"id": id, "path": ".github/workflows/automerge.yml@refs/heads/main", "head_sha": "abc123", "check_suite_id": 88, "repository": map[string]string{"full_name": "owner/repo"}})
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
 			writeJSON(t, w, f.comments)
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			f.mergeSafetyReadOrder = append(f.mergeSafetyReadOrder, "review-threads")
 			var payload struct {
 				Query string `json:"query"`
 			}
@@ -693,6 +760,7 @@ func (f *fakeGitHub) handler(t *testing.T) http.HandlerFunc {
 			w.WriteHeader(http.StatusCreated)
 			writeJSON(t, w, map[string]string{"body": f.createdComment})
 		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/") && strings.HasSuffix(r.URL.Path, "/merge"):
+			f.mergeSafetyReadOrder = append(f.mergeSafetyReadOrder, "merge")
 			f.mergeCalls++
 			var mergePayload map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&mergePayload); err != nil {
