@@ -92,19 +92,21 @@ func TestEvaluateChecksIgnoresExactNonNumericMatrixName(t *testing.T) {
 		case "/repos/acme/project/commits/abc/status":
 			_, _ = fmt.Fprint(w, `{"state":"success","total_count":1,"statuses":[{"context":"ci","state":"success"}]}`)
 		case "/repos/acme/project/commits/abc/check-runs":
-			_, _ = fmt.Fprint(w, `{"total_count":1,"check_runs":[{"id":2,"name":"automerge (ubuntu-latest)","status":"completed","conclusion":"cancelled"}]}`)
+			_, _ = fmt.Fprint(w, `{"total_count":1,"check_runs":[{"id":2,"name":"automerge (ubuntu-latest)","status":"completed","conclusion":"cancelled","details_url":"https://github.com/acme/project/actions/runs/123/job/42","check_suite":{"id":88}}]}`)
+		case "/repos/acme/project/actions/runs/123":
+			_, _ = fmt.Fprint(w, `{"id":123,"path":".github/workflows/automerge.yml","head_sha":"abc","repository":{"full_name":"acme/project"},"check_suite_id":88}`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
 
-	state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", []string{"automerge (ubuntu-latest)"}, "")
+	state, err := evaluateChecks(context.Background(), newGitHubClient(server.URL, ""), "acme/project", "abc", []string{"automerge (ubuntu-latest)"}, ".github/workflows/automerge.yml")
 	if err != nil {
 		t.Fatalf("evaluateChecks() error = %v", err)
 	}
-	if state != checksFailed {
-		t.Fatalf("evaluateChecks() = %q, want %q", state, checksFailed)
+	if state != checksPassed {
+		t.Fatalf("evaluateChecks() = %q, want %q", state, checksPassed)
 	}
 }
 

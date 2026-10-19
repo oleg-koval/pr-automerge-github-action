@@ -75,6 +75,12 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 	if value := env.input("automerge-workflow-path"); value != "" {
 		cfg.AutomergeWorkflowPath = value
 	}
+	if cfg.AutomergeWorkflowPath == "" {
+		if _, workflowRef, ok := strings.Cut(env.get("GITHUB_WORKFLOW_REF"), "/.github/workflows/"); ok {
+			workflowFile, _, _ := strings.Cut(workflowRef, "@")
+			cfg.AutomergeWorkflowPath = ".github/workflows/" + workflowFile
+		}
+	}
 	if cfg.AutomergeWorkflowPath != "" && (!strings.HasPrefix(cfg.AutomergeWorkflowPath, ".github/workflows/") || !strings.HasSuffix(cfg.AutomergeWorkflowPath, ".yml") && !strings.HasSuffix(cfg.AutomergeWorkflowPath, ".yaml") || strings.Contains(cfg.AutomergeWorkflowPath, "..")) {
 		return Config{}, fmt.Errorf("invalid automerge-workflow-path %q", cfg.AutomergeWorkflowPath)
 	}
