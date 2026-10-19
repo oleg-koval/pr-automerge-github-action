@@ -53,9 +53,10 @@ func TestWorkflowDiscoveryScriptsFanOutSafely(t *testing.T) {
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					outputPath := filepath.Join(t.TempDir(), "github-output")
-					fixtureNumbers := newlineNumbers(tc.numbers)
+					fixturePageOne, fixturePageTwo := paginatedFixtureNumbers(tc.numbers)
 					if tc.empty {
-						fixtureNumbers = ""
+						fixturePageOne = ""
+						fixturePageTwo = ""
 					}
 					path := createFakeGH(t)
 					cmd := exec.Command("bash", "-e", "-u", "-o", "pipefail", "-c", script)
@@ -67,7 +68,8 @@ func TestWorkflowDiscoveryScriptsFanOutSafely(t *testing.T) {
 						"GITHUB_REPOSITORY=owner/repo",
 						"GITHUB_OUTPUT="+outputPath,
 						"GH_TOKEN=test-token",
-						"GH_FIXTURE_NUMBERS="+fixtureNumbers,
+						"GH_FIXTURE_PAGE_ONE="+fixturePageOne,
+						"GH_FIXTURE_PAGE_TWO="+fixturePageTwo,
 						fmt.Sprintf("GH_FIXTURE_FAIL=%t", tc.fail),
 					)
 					combinedOutput, err := cmd.CombinedOutput()
@@ -126,15 +128,13 @@ func createFakeGH(t *testing.T) string {
 	path := filepath.Join(dir, "gh")
 	const fake = `#!/bin/sh
 [ "$1" = "api" ] || exit 90
-shift
-[ "$1" = "--paginate" ] || exit 91
-shift
-[ "$1" = "repos/owner/repo/pulls?state=open&per_page=100" ] || exit 92
-shift
-[ "$1" = "--jq" ] || exit 93
-[ "$2" = ".[].number" ] || exit 94
+[ "$2" = "--paginate" ] || exit 91
+[ "$3" = "repos/owner/repo/pulls?state=open&per_page=100" ] || exit 92
+[ "$4" = "--jq" ] || exit 93
+[ "$5" = ".[].number" ] || exit 94
+printf '%s' "$GH_FIXTURE_PAGE_ONE"
 [ "$GH_FIXTURE_FAIL" != "true" ] || exit 1
-printf '%s' "$GH_FIXTURE_NUMBERS"
+printf '%s' "$GH_FIXTURE_PAGE_TWO"
 `
 	if err := os.WriteFile(path, []byte(fake), 0o700); err != nil {
 		t.Fatalf("write fake gh: %v", err)
@@ -151,13 +151,20 @@ func writeEmptyEvent(t *testing.T) string {
 	return path
 }
 
-func newlineNumbers(count int) string {
-	if count == 0 {
+func paginatedFixtureNumbers(count int) (string, string) {
+	pageOneCount := min(count, 100)
+	pageOne := numberRange(1, pageOneCount)
+	pageTwo := numberRange(101, count-pageOneCount)
+	return pageOne, pageTwo
+}
+
+func numberRange(start, count int) string {
+	if count <= 0 {
 		return ""
 	}
 	values := make([]string, count)
 	for i := range values {
-		values[i] = fmt.Sprint(i + 1)
+		values[i] = fmt.Sprint(start + i)
 	}
 	return strings.Join(values, "\n") + "\n"
 }
