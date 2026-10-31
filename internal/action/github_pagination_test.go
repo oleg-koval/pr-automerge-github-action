@@ -214,9 +214,10 @@ func TestHasPRCommentsConfirmsEmptyScan(t *testing.T) {
 				t.Fatalf("hasPRComments() = %t, %v; want %t, error=%t", got, err, want, source == "error")
 			}
 			wantCalls := 3
-			if source == "none" {
+			switch source {
+			case "none":
 				wantCalls = 4
-			} else if source == "first scan" {
+			case "first scan":
 				wantCalls = 1
 			}
 			if calls != wantCalls {
