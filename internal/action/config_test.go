@@ -52,3 +52,33 @@ func TestLoadConfigAutomergeWorkflowPath(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigAuthorAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, configured string
+		wantOwner, wantBot      bool
+	}{
+		{name: "defaults", wantOwner: true, wantBot: true},
+		{name: "input replaces defaults", input: "custom-bot"},
+		{name: "config replaces defaults", configured: "bots: [custom-bot]\n"},
+		{name: "input overrides config", input: "oleg-koval", configured: "bots: [custom-bot]\n", wantOwner: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			if err := os.WriteFile(path, []byte(tc.configured), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loadConfig(context.Background(), nil, env{
+				"INPUT_CONFIG-PATH":        path,
+				"INPUT_MAINTAINER-HANDLES": "maintainer",
+				"INPUT_BOT-LOGINS":         tc.input,
+			}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if containsLogin(cfg.Bots, "oleg-koval") != tc.wantOwner || containsLogin(cfg.Bots, "dependabot[bot]") != tc.wantBot {
+				t.Fatalf("unexpected author allowlist: %v", cfg.Bots)
+			}
+		})
+	}
+}

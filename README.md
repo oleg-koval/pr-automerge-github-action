@@ -11,7 +11,7 @@ Copy the complete, security-scoped workflow from [`examples/workflow.yml`](examp
 | Input | Default | Description |
 | --- | --- | --- |
 | `github-token` | `${{ github.token }}` | Token used to read PR state and merge; comment permissions are needed only when comment posting is enabled. |
-| `bot-logins` | `dependabot[bot],snyk-bot,renovate[bot]` | Comma-separated bot logins allowed to automerge. |
+| `bot-logins` | `dependabot[bot],snyk-bot,renovate[bot],oleg-koval` | Comma-separated author logins allowed to automerge. Replaces the default allowlist. |
 | `maintainer-handles` | required | Comma-separated GitHub handles to mention for manual action. |
 | `merge-method` | `squash` | One of `merge`, `squash`, or `rebase`. |
 | `config-path` | `.github/pr-bot-automerge.yml` | Optional YAML config path. |
@@ -32,6 +32,7 @@ bots:
   - dependabot[bot]
   - snyk-bot
   - renovate[bot]
+  - oleg-koval
 maintainers:
   - oleg-koval
   - octocat
