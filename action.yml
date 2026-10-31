@@ -38,6 +38,18 @@ inputs:
   no-pr-comments:
     description: Suppress all PR comments and merge only while the PR has no issue comments, review comments, or non-empty review bodies.
     required: false
+  suppress-comments:
+    description: Suppress action-generated PR comments without requiring an empty PR discussion. Does not change merge eligibility.
+    required: false
+  required-reviewer-login:
+    description: Require the latest review from this exact GitHub Bot login to be APPROVED or COMMENTED on the current head. Open review threads still block merging.
+    required: false
+  required-reviewer-logins:
+    description: Comma-separated exact GitHub Bot logins; every listed reviewer must have a latest APPROVED or COMMENTED review on the current head. Open review threads still block merging.
+    required: false
+  expected-head-sha:
+    description: Optional 40-character head SHA guard. The action skips if the PR head differs before evaluation or immediately before merge.
+    required: false
 runs:
   using: docker
   image: Dockerfile

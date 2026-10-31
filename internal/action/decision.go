@@ -101,6 +101,10 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 	if pr.Head.SHA == "" {
 		pr.Head.SHA = eventPR.Head.SHA
 	}
+	if cfg.ExpectedHeadSHA != "" && pr.Head.SHA != cfg.ExpectedHeadSHA {
+		logger.Printf("skip PR #%d because head SHA %s does not match expected SHA %s", pr.Number, pr.Head.SHA, cfg.ExpectedHeadSHA)
+		return nil
+	}
 	if pr.State != "" && pr.State != "open" {
 		logger.Printf("skip PR #%d because it is %s", pr.Number, pr.State)
 		return nil
@@ -136,7 +140,6 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 		body := maintainerComment(cfg, pr, "failed-checks", "Checks failed for this maintenance bot PR. This may be a breaking dependency or security update and needs maintainer review.")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
-
 	if hasMergeConflict(pr) {
 		if pr.User.Login == "dependabot[bot]" {
 			body := markerComment(pr, "dependabot-conflict", cfg.DependabotRebaseComment)
@@ -209,6 +212,10 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 		logger.Printf("skip PR #%d because its head changed from %s to %s while it was being checked", pr.Number, pr.Head.SHA, latestPR.Head.SHA)
 		return nil
 	}
+	if cfg.ExpectedHeadSHA != "" && latestPR.Head.SHA != cfg.ExpectedHeadSHA {
+		logger.Printf("skip PR #%d because refreshed head SHA %s does not match expected SHA %s", pr.Number, latestPR.Head.SHA, cfg.ExpectedHeadSHA)
+		return nil
+	}
 	if latestPR.Mergeable == nil || !*latestPR.Mergeable || hasMergeConflict(latestPR) || isBlockedByChecks(latestPR) || isBehindBase(latestPR) {
 		logger.Printf("skip PR #%d because its refreshed merge state is no longer safe: mergeable=%v state=%s", pr.Number, latestPR.Mergeable, latestPR.MergeableState)
 		return nil
@@ -268,6 +275,30 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 		}
 		if hasComments {
 			logger.Printf("skip PR #%d because comments appeared immediately before merge", pr.Number)
+			return nil
+		}
+	}
+	requiredReviewers := append([]string(nil), cfg.RequiredReviewerLogins...)
+	if cfg.RequiredReviewerLogin != "" {
+		requiredReviewers = append(requiredReviewers, cfg.RequiredReviewerLogin)
+	}
+	for _, reviewer := range requiredReviewers {
+		completed, err := gh.hasCurrentHeadReviewerCompletion(ctx, repo, pr.Number, reviewer, latestPR.Head.SHA)
+		if err != nil {
+			return fmt.Errorf("check required reviewer %q on current head: %w", reviewer, err)
+		}
+		if !completed {
+			logger.Printf("skip PR #%d because required reviewer %q has no completed review on current head %s", pr.Number, reviewer, latestPR.Head.SHA)
+			return nil
+		}
+	}
+	if len(requiredReviewers) > 0 {
+		hasOpenThreads, err := gh.hasOpenReviewComments(ctx, repo, pr.Number)
+		if err != nil {
+			return fmt.Errorf("final required-reviewer thread check: %w", err)
+		}
+		if hasOpenThreads {
+			logger.Printf("skip PR #%d because review threads opened during required-reviewer verification", pr.Number)
 			return nil
 		}
 	}
@@ -544,8 +575,8 @@ func maintainerComment(cfg Config, pr pullRequest, reason string, message string
 }
 
 func postCommentOnce(ctx context.Context, gh *githubClient, cfg Config, repo string, number int, body string, logger *log.Logger) error {
-	if cfg.NoPRComments {
-		logger.Printf("no-pr-comments is enabled; suppressing comment on PR #%d", number)
+	if cfg.SuppressComments || cfg.NoPRComments {
+		logger.Printf("comment suppression is enabled; suppressing comment on PR #%d", number)
 		return nil
 	}
 	marker := firstLine(body)

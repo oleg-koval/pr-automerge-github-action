@@ -23,6 +23,10 @@ type Config struct {
 	AutomergeWorkflowPath   string        `yaml:"automerge_workflow_path"`
 	DryRun                  bool          `yaml:"dry_run"`
 	NoPRComments            bool          `yaml:"no_pr_comments"`
+	SuppressComments        bool          `yaml:"suppress_comments"`
+	RequiredReviewerLogin   string        `yaml:"required_reviewer_login"`
+	RequiredReviewerLogins  []string      `yaml:"required_reviewer_logins"`
+	ExpectedHeadSHA         string        `yaml:"-"`
 }
 
 const defaultDependabotRebaseComment = "@dependabot rebase"
@@ -61,6 +65,25 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 			return Config{}, fmt.Errorf("invalid no-pr-comments: %q", value)
 		}
 		cfg.NoPRComments = strings.EqualFold(value, "true")
+	}
+	if value := env.input("suppress-comments"); value != "" {
+		if !strings.EqualFold(value, "true") && !strings.EqualFold(value, "false") {
+			return Config{}, fmt.Errorf("invalid suppress-comments: %q", value)
+		}
+		cfg.SuppressComments = strings.EqualFold(value, "true")
+	}
+	if value := env.input("required-reviewer-login"); value != "" {
+		cfg.RequiredReviewerLogin = strings.TrimSpace(strings.TrimPrefix(value, "@"))
+	}
+	if value := env.input("required-reviewer-logins"); value != "" {
+		cfg.RequiredReviewerLogins = splitCSV(value)
+	}
+	if value := env.input("expected-head-sha"); value != "" {
+		value = strings.TrimSpace(value)
+		if !isGitSHA(value) {
+			return Config{}, fmt.Errorf("invalid expected-head-sha %q", value)
+		}
+		cfg.ExpectedHeadSHA = strings.ToLower(value)
 	}
 	if value := env.input("wait-timeout"); value != "" {
 		duration, err := parseDuration(value)
@@ -102,6 +125,14 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 	}
 	if len(cfg.Bots) == 0 {
 		return Config{}, errors.New("no bot logins configured")
+	}
+	if cfg.RequiredReviewerLogin != "" && (strings.ContainsAny(cfg.RequiredReviewerLogin, " \t\r\n,") || strings.HasPrefix(cfg.RequiredReviewerLogin, "@")) {
+		return Config{}, fmt.Errorf("invalid required-reviewer-login %q", cfg.RequiredReviewerLogin)
+	}
+	for _, login := range cfg.RequiredReviewerLogins {
+		if strings.ContainsAny(login, " \t\r\n,") || strings.HasPrefix(login, "@") {
+			return Config{}, fmt.Errorf("invalid required-reviewer-logins entry %q", login)
+		}
 	}
 	if len(cfg.Maintainers) == 0 {
 		return Config{}, errors.New("maintainer-handles input or maintainers config is required")
@@ -180,7 +211,28 @@ func mergeConfig(base Config, override Config) Config {
 	if override.NoPRComments {
 		base.NoPRComments = true
 	}
+	if override.SuppressComments {
+		base.SuppressComments = true
+	}
+	if override.RequiredReviewerLogin != "" {
+		base.RequiredReviewerLogin = override.RequiredReviewerLogin
+	}
+	if len(override.RequiredReviewerLogins) > 0 {
+		base.RequiredReviewerLogins = override.RequiredReviewerLogins
+	}
 	return base
+}
+
+func isGitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f' || char >= 'A' && char <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func splitCSV(value string) []string {

@@ -21,9 +21,11 @@ var (
 )
 
 const (
-	statusPageSize        = 100
-	checkRunPageSize      = 100
-	maxGitHubResponseSize = 32 << 20
+	statusPageSize            = 100
+	checkRunPageSize          = 100
+	pullRequestReviewPageSize = 100
+	maxPullRequestReviewPages = 100
+	maxGitHubResponseSize     = 32 << 20
 )
 
 type githubRateLimitError struct {
@@ -145,6 +147,20 @@ type ghApp struct {
 
 type issueComment struct {
 	Body string `json:"body"`
+}
+
+type pullRequestReview struct {
+	ID          int64      `json:"id"`
+	User        reviewUser `json:"user"`
+	State       string     `json:"state"`
+	CommitID    string     `json:"commit_id"`
+	Body        string     `json:"body"`
+	SubmittedAt *time.Time `json:"submitted_at"`
+}
+
+type reviewUser struct {
+	Login string `json:"login"`
+	Type  string `json:"type"`
 }
 
 type reviewThreadsResponse struct {
@@ -361,6 +377,100 @@ func (c *githubClient) listComments(ctx context.Context, repo string, number int
 	var comments []issueComment
 	err := c.request(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number), nil, &comments)
 	return comments, err
+}
+
+func (c *githubClient) latestRequiredReviewerReview(ctx context.Context, repo string, number int, login string) (pullRequestReview, bool, error) {
+	first, paginated, err := c.scanPullRequestReviews(ctx, repo, number)
+	if err != nil {
+		return pullRequestReview{}, false, err
+	}
+	if paginated {
+		second, _, err := c.scanPullRequestReviews(ctx, repo, number)
+		if err != nil {
+			return pullRequestReview{}, false, err
+		}
+		if !reflect.DeepEqual(first, second) {
+			return pullRequestReview{}, false, errPaginationChanged
+		}
+		first = second
+	}
+
+	var latest pullRequestReview
+	found := false
+	for _, review := range first {
+		if !strings.EqualFold(review.User.Login, login) {
+			continue
+		}
+		if review.SubmittedAt == nil {
+			return pullRequestReview{}, false, fmt.Errorf("review from %q is missing submitted_at", login)
+		}
+		if !found || review.SubmittedAt.After(*latest.SubmittedAt) || (review.SubmittedAt.Equal(*latest.SubmittedAt) && review.ID > latest.ID) {
+			latest = review
+			found = true
+		}
+	}
+	return latest, found, nil
+}
+
+func (c *githubClient) hasCurrentHeadReviewerCompletion(ctx context.Context, repo string, number int, login string, headSHA string) (bool, error) {
+	review, found, err := c.latestRequiredReviewerReview(ctx, repo, number, login)
+	if err != nil || !found {
+		return false, err
+	}
+	if review.User.Type != "Bot" || review.CommitID != headSHA {
+		return false, nil
+	}
+	switch strings.ToUpper(review.State) {
+	case "APPROVED":
+		return true, nil
+	case "COMMENTED":
+		return !reviewReportsProviderFailure(review.Body), nil
+	default:
+		return false, nil
+	}
+}
+
+func reviewReportsProviderFailure(body string) bool {
+	text := strings.ToLower(body)
+	for _, phrase := range []string{
+		"you've hit your code review limit",
+		"you have hit your code review limit",
+		"usage limit",
+		"quota",
+		"unable to review",
+		"review unavailable",
+		"review skipped",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *githubClient) scanPullRequestReviews(ctx context.Context, repo string, number int) ([]pullRequestReview, bool, error) {
+	var reviews []pullRequestReview
+	seen := make(map[int64]bool)
+	for page := 1; page <= maxPullRequestReviewPages; page++ {
+		var current []pullRequestReview
+		path := fmt.Sprintf("/repos/%s/pulls/%d/reviews?per_page=%d&page=%d", repo, number, pullRequestReviewPageSize, page)
+		if err := c.request(ctx, http.MethodGet, path, nil, &current); err != nil {
+			return nil, false, err
+		}
+		for _, review := range current {
+			if review.ID != 0 {
+				if seen[review.ID] {
+					return nil, false, errPaginationChanged
+				}
+				seen[review.ID] = true
+			}
+		}
+		reviews = append(reviews, current...)
+		if len(current) < pullRequestReviewPageSize {
+			return reviews, page > 1, nil
+		}
+	}
+	return nil, false, fmt.Errorf("pull request review pagination exceeded %d pages", maxPullRequestReviewPages)
 }
 
 func (c *githubClient) hasOpenReviewComments(ctx context.Context, repo string, number int) (bool, error) {

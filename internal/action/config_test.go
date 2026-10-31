@@ -93,3 +93,42 @@ func TestLoadConfigAuthorAllowlist(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigCommentAndReviewInputsAreIndependent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte("no_pr_comments: true\nsuppress_comments: true\nrequired_reviewer_logins: [\"codex-review[bot]\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(context.Background(), nil, env{
+		"INPUT_CONFIG-PATH":              path,
+		"INPUT_MAINTAINER-HANDLES":       "maintainer",
+		"INPUT_NO-PR-COMMENTS":           "false",
+		"INPUT_SUPPRESS-COMMENTS":        "true",
+		"INPUT_REQUIRED-REVIEWER-LOGINS": "codex-review[bot],security-review[bot]",
+		"INPUT_EXPECTED-HEAD-SHA":        strings.Repeat("A", 40),
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NoPRComments || !cfg.SuppressComments {
+		t.Fatalf("comment policies were not independent: noPR=%v suppress=%v", cfg.NoPRComments, cfg.SuppressComments)
+	}
+	if len(cfg.RequiredReviewerLogins) != 2 || cfg.RequiredReviewerLogins[0] != "codex-review[bot]" || cfg.RequiredReviewerLogins[1] != "security-review[bot]" {
+		t.Fatalf("required reviewer logins = %v", cfg.RequiredReviewerLogins)
+	}
+	if cfg.ExpectedHeadSHA != strings.Repeat("a", 40) {
+		t.Fatalf("expected head SHA = %q", cfg.ExpectedHeadSHA)
+	}
+}
+
+func TestLoadConfigRejectsInvalidExpectedHeadSHA(t *testing.T) {
+	for _, input := range []string{"abc", strings.Repeat("z", 40), strings.Repeat("a", 64)} {
+		_, err := loadConfig(context.Background(), nil, env{
+			"INPUT_MAINTAINER-HANDLES": "maintainer",
+			"INPUT_EXPECTED-HEAD-SHA":  input,
+		}, "")
+		if err == nil || !strings.Contains(err.Error(), "invalid expected-head-sha") {
+			t.Fatalf("input %q error = %v, want invalid expected-head-sha", input, err)
+		}
+	}
+}
