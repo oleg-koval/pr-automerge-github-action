@@ -87,7 +87,7 @@ jobs:
       - uses: oleg-koval/pr-automerge-github-action@72ae8a454d6a02be4ba53a6f1b05a10cb62d880b # workflow provenance and paginated checks
         with:
           github-token: ${{ github.token }}
-          bot-logins: dependabot[bot],snyk-bot,renovate[bot],oleg-koval
+          bot-logins: dependabot[bot],snyk-bot,renovate[bot],oleg-koval,oleg-koval-fleet[bot]
           maintainer-handles: oleg-koval
           merge-method: squash
           ignored-check-names: automerge,automerge (${{ matrix.pr-number }})
