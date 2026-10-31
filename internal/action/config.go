@@ -22,13 +22,14 @@ type Config struct {
 	IgnoredCheckNames       []string      `yaml:"ignored_check_names"`
 	AutomergeWorkflowPath   string        `yaml:"automerge_workflow_path"`
 	DryRun                  bool          `yaml:"dry_run"`
+	NoPRComments            bool          `yaml:"no_pr_comments"`
 }
 
 const defaultDependabotRebaseComment = "@dependabot rebase"
 
 func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Config, error) {
 	cfg := Config{
-		Bots:                    []string{"dependabot[bot]", "snyk-bot", "renovate[bot]"},
+		Bots:                    []string{"dependabot[bot]", "snyk-bot", "renovate[bot]", "oleg-koval"},
 		MergeMethod:             "squash",
 		DependabotRebaseComment: defaultDependabotRebaseComment,
 		WaitTimeout:             30 * time.Minute,
@@ -54,6 +55,12 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 	}
 	if value := env.input("dry-run"); value != "" {
 		cfg.DryRun = strings.EqualFold(value, "true")
+	}
+	if value := env.input("no-pr-comments"); value != "" {
+		if !strings.EqualFold(value, "true") && !strings.EqualFold(value, "false") {
+			return Config{}, fmt.Errorf("invalid no-pr-comments: %q", value)
+		}
+		cfg.NoPRComments = strings.EqualFold(value, "true")
 	}
 	if value := env.input("wait-timeout"); value != "" {
 		duration, err := parseDuration(value)
@@ -169,6 +176,9 @@ func mergeConfig(base Config, override Config) Config {
 	}
 	if override.DryRun {
 		base.DryRun = true
+	}
+	if override.NoPRComments {
+		base.NoPRComments = true
 	}
 	return base
 }

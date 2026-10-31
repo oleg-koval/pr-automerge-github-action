@@ -167,3 +167,62 @@ func TestGetCheckRunsAcceptsLargeOutputResponse(t *testing.T) {
 		t.Fatal("getCheckRuns() did not parse the check run with large output")
 	}
 }
+
+func TestHasPRCommentsConfirmsEmptyScan(t *testing.T) {
+	for _, source := range []string{"none", "issue", "thread", "review", "error", "first scan"} {
+		t.Run(source, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var request struct {
+					Variables struct {
+						ThreadAfter *string `json:"threadAfter"`
+						ReviewAfter *string `json:"reviewAfter"`
+					} `json:"variables"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				page := (calls - 1) % 2
+				if page == 0 && (request.Variables.ThreadAfter != nil || request.Variables.ReviewAfter != nil) {
+					t.Error("complete scan did not restart both cursors")
+				}
+				if page == 1 && (request.Variables.ReviewAfter == nil || *request.Variables.ReviewAfter != "next") {
+					t.Error("scan did not fetch next review page")
+				}
+				if calls == 3 && source == "error" {
+					_, _ = fmt.Fprint(w, `{"errors":[{"message":"unavailable"}]}`)
+					return
+				}
+				count, threads, reviews := 0, "[]", `[{"body":" "}]`
+				if calls == 3 || source == "first scan" {
+					switch source {
+					case "issue", "first scan":
+						count = 1
+					case "thread":
+						threads = `[{"isResolved":true}]`
+					case "review":
+						reviews = `[{"body":"added to an earlier page"}]`
+					}
+				}
+				_, _ = fmt.Fprintf(w, `{"data":{"repository":{"pullRequest":{"comments":{"totalCount":%d},"reviewThreads":{"nodes":%s,"pageInfo":{"hasNextPage":false}},"reviews":{"nodes":%s,"pageInfo":{"hasNextPage":%t,"endCursor":"next"}}}}}}`, count, threads, reviews, page == 0)
+			}))
+			defer server.Close()
+			got, err := newGitHubClient(server.URL, "").hasPRComments(context.Background(), "acme/project", 1)
+			want := source != "none" && source != "error"
+			if got != want || (err != nil) != (source == "error") {
+				t.Fatalf("hasPRComments() = %t, %v; want %t, error=%t", got, err, want, source == "error")
+			}
+			wantCalls := 3
+			switch source {
+			case "none":
+				wantCalls = 4
+			case "first scan":
+				wantCalls = 1
+			}
+			if calls != wantCalls {
+				t.Fatalf("requests = %d, want %d", calls, wantCalls)
+			}
+		})
+	}
+}

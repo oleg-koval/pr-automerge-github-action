@@ -9,6 +9,7 @@ import (
 type eventPayload struct {
 	PullRequest *eventPullRequest `json:"pull_request"`
 	CheckSuite  *eventCheckSuite  `json:"check_suite"`
+	Issue       *eventIssue       `json:"issue"`
 	Repository  eventRepository   `json:"repository"`
 }
 
@@ -19,7 +20,15 @@ func (p eventPayload) pullRequests() []eventPullRequest {
 	if p.CheckSuite != nil {
 		return p.CheckSuite.PullRequests
 	}
+	if p.Issue != nil && p.Issue.PullRequest != nil {
+		return []eventPullRequest{{Number: p.Issue.Number}}
+	}
 	return nil
+}
+
+type eventIssue struct {
+	Number      int       `json:"number"`
+	PullRequest *struct{} `json:"pull_request"`
 }
 
 type eventPullRequest struct {

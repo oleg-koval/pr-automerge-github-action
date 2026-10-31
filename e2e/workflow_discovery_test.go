@@ -179,3 +179,56 @@ func jsonNumberArray(count int) string {
 	}
 	return "[" + strings.Join(values, ",") + "]"
 }
+
+func TestExampleWorkflowCommentDiscovery(t *testing.T) {
+	_, sourceFile, _, _ := runtime.Caller(0)
+	path := filepath.Join(filepath.Dir(filepath.Dir(sourceFile)), "examples/workflow.yml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		On map[string]yaml.Node `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var issueComment struct {
+		Types []string `yaml:"types"`
+	}
+	node := workflow.On["issue_comment"]
+	if err := node.Decode(&issueComment); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(issueComment.Types, ",") != "created,edited,deleted" {
+		t.Fatal("example must subscribe to issue comments")
+	}
+	script := readDiscoveryScript(t, path)
+	for _, tc := range []struct{ name, event, payload, want string }{
+		{"PR comment", "issue_comment", `{"issue":{"number":42,"pull_request":{}}}`, "[42]"},
+		{"issue comment", "issue_comment", `{"issue":{"number":42}}`, "[]"},
+		{"missing number", "issue_comment", `{"issue":{"pull_request":{}}}`, "[]"},
+		{"pull request", "pull_request_target", `{"pull_request":{"number":42}}`, "[42]"},
+		{"check suite", "check_suite", `{"check_suite":{"pull_requests":[{"number":42},{"number":42}]}}`, "[42]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eventPath := writeEmptyEvent(t)
+			if err := os.WriteFile(eventPath, []byte(tc.payload), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			outputPath := filepath.Join(t.TempDir(), "output")
+			cmd := exec.Command("bash", "-e", "-u", "-o", "pipefail", "-c", script)
+			cmd.Env = append(os.Environ(), "EVENT_NAME="+tc.event, "GITHUB_EVENT_PATH="+eventPath, "GITHUB_OUTPUT="+outputPath)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("discovery: %v\n%s", err, output)
+			}
+			output, err := os.ReadFile(outputPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(output) != "pr-numbers="+tc.want+"\n" {
+				t.Fatalf("output = %q, want %s", output, tc.want)
+			}
+		})
+	}
+}
