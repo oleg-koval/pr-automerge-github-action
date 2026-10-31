@@ -6,7 +6,7 @@ inputs:
     required: false
     default: ${{ github.token }}
   bot-logins:
-    description: Comma-separated author logins allowed to automerge. Defaults to dependabot[bot],snyk-bot,renovate[bot],oleg-koval; replaces the default allowlist when set.
+    description: Comma-separated author logins allowed to automerge. Defaults to dependabot[bot],snyk-bot,renovate[bot],oleg-koval,oleg-koval-fleet[bot]; replaces the default allowlist when set.
     required: false
   maintainer-handles:
     description: Comma-separated GitHub handles to mention when manual action is needed.
