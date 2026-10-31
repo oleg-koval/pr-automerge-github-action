@@ -156,6 +156,34 @@ type reviewThreadsResponse struct {
 	} `json:"errors"`
 }
 
+type prCommentsResponse struct {
+	Data struct {
+		Repository *struct {
+			PullRequest *struct {
+				Comments      *commentCountConnection `json:"comments"`
+				ReviewThreads *reviewThreadConnection `json:"reviewThreads"`
+				Reviews       *reviewBodyConnection   `json:"reviews"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type commentCountConnection struct {
+	TotalCount int `json:"totalCount"`
+}
+
+type reviewBodyConnection struct {
+	Nodes    []reviewBody `json:"nodes"`
+	PageInfo *pageInfo    `json:"pageInfo"`
+}
+
+type reviewBody struct {
+	Body string `json:"body"`
+}
+
 type reviewRepository struct {
 	PullRequest *reviewPullRequest `json:"pullRequest"`
 }
@@ -381,6 +409,65 @@ func (c *githubClient) hasOpenReviewComments(ctx context.Context, repo string, n
 			return false, errors.New("github graphql: reviewThreads pageInfo hasNextPage without endCursor")
 		}
 		cursor = page.EndCursor
+	}
+}
+
+func (c *githubClient) hasPRComments(ctx context.Context, repo string, number int) (bool, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return false, fmt.Errorf("repository must be owner/name, got %q", repo)
+	}
+
+	const query = `query($owner:String!,$name:String!,$number:Int!,$threadAfter:String,$reviewAfter:String){repository(owner:$owner,name:$name){pullRequest(number:$number){comments(first:1){totalCount} reviewThreads(first:100,after:$threadAfter){nodes{isResolved}pageInfo{hasNextPage,endCursor}} reviews(first:100,after:$reviewAfter){nodes{body}pageInfo{hasNextPage,endCursor}}}}}`
+	var threadCursor, reviewCursor *string
+	for {
+		variables := map[string]any{
+			"owner": owner, "name": name, "number": number,
+			"threadAfter": threadCursor, "reviewAfter": reviewCursor,
+		}
+		var response prCommentsResponse
+		if err := c.request(ctx, http.MethodPost, c.graphqlURL(), map[string]any{"query": query, "variables": variables}, &response); err != nil {
+			return false, err
+		}
+		if len(response.Errors) > 0 {
+			message := response.Errors[0].Message
+			if strings.Contains(strings.ToLower(message), "rate limit") {
+				return false, &githubRateLimitError{message: message}
+			}
+			return false, fmt.Errorf("github graphql: %s", message)
+		}
+		if response.Data.Repository == nil || response.Data.Repository.PullRequest == nil {
+			return false, errors.New("github graphql: pull request not found")
+		}
+		pr := response.Data.Repository.PullRequest
+		if pr.Comments == nil || pr.ReviewThreads == nil || pr.ReviewThreads.PageInfo == nil || pr.Reviews == nil || pr.Reviews.PageInfo == nil {
+			return false, errors.New("github graphql: PR comments connection missing")
+		}
+		if pr.Comments.TotalCount > 0 || len(pr.ReviewThreads.Nodes) > 0 {
+			return true, nil
+		}
+		for _, review := range pr.Reviews.Nodes {
+			if strings.TrimSpace(review.Body) != "" {
+				return true, nil
+			}
+		}
+		threadPage := pr.ReviewThreads.PageInfo
+		reviewPage := pr.Reviews.PageInfo
+		if !threadPage.HasNextPage && !reviewPage.HasNextPage {
+			return false, nil
+		}
+		if threadPage.HasNextPage {
+			if threadPage.EndCursor == nil || *threadPage.EndCursor == "" {
+				return false, errors.New("github graphql: reviewThreads pageInfo hasNextPage without endCursor")
+			}
+			threadCursor = threadPage.EndCursor
+		}
+		if reviewPage.HasNextPage {
+			if reviewPage.EndCursor == nil || *reviewPage.EndCursor == "" {
+				return false, errors.New("github graphql: reviews pageInfo hasNextPage without endCursor")
+			}
+			reviewCursor = reviewPage.EndCursor
+		}
 	}
 }
 

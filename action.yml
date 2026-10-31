@@ -35,6 +35,9 @@ inputs:
   dry-run:
     description: Log intended actions without commenting or merging.
     required: false
+  no-pr-comments:
+    description: Suppress all PR comments and merge only while the PR has no issue comments, review comments, or non-empty review bodies.
+    required: false
 runs:
   using: docker
   image: Dockerfile
