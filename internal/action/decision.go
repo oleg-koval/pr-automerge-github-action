@@ -23,7 +23,7 @@ func Run(ctx context.Context, environ []string, logger *log.Logger) error {
 	env := newEnv(environ)
 	eventName := env.get("GITHUB_EVENT_NAME")
 	syntheticEvent := eventName == "schedule" || eventName == "workflow_dispatch"
-	if !syntheticEvent && eventName != "pull_request" && eventName != "pull_request_target" && eventName != "pull_request_review" && eventName != "pull_request_review_comment" && eventName != "check_suite" {
+	if !syntheticEvent && eventName != "pull_request" && eventName != "pull_request_target" && eventName != "pull_request_review" && eventName != "pull_request_review_comment" && eventName != "issue_comment" && eventName != "check_suite" {
 		logger.Printf("not a supported PR event: %s", eventName)
 		return nil
 	}
@@ -112,6 +112,16 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 	if !containsLogin(cfg.Bots, pr.User.Login) {
 		logger.Printf("skip PR #%d from non-configured author %s", pr.Number, pr.User.Login)
 		return nil
+	}
+	if cfg.NoPRComments {
+		hasComments, err := gh.hasPRComments(ctx, repo, pr.Number)
+		if err != nil {
+			return fmt.Errorf("check PR comments: %w", err)
+		}
+		if hasComments {
+			logger.Printf("skip PR #%d because it has comments and no-pr-comments is enabled", pr.Number)
+			return nil
+		}
 	}
 
 	state, err := waitForChecks(ctx, gh, cfg, repo, pr.Head.SHA, logger)
@@ -218,6 +228,16 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 		body := maintainerComment(cfg, pr, "failed-checks", "Checks failed for this maintenance bot PR. This may be a breaking dependency or security update and needs maintainer review.")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
 	}
+	if cfg.NoPRComments {
+		hasComments, err := gh.hasPRComments(ctx, repo, pr.Number)
+		if err != nil {
+			return fmt.Errorf("recheck PR comments before merge: %w", err)
+		}
+		if hasComments {
+			logger.Printf("skip PR #%d because comments appeared before merge", pr.Number)
+			return nil
+		}
+	}
 
 	openReviewComments, err = gh.hasOpenReviewComments(ctx, repo, pr.Number)
 	if err != nil {
@@ -240,6 +260,16 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 	if state == checksFailed {
 		body := maintainerComment(cfg, pr, "failed-checks", "Checks failed for this maintenance bot PR. This may be a breaking dependency or security update and needs maintainer review.")
 		return postCommentOnce(ctx, gh, cfg, repo, pr.Number, body, logger)
+	}
+	if cfg.NoPRComments {
+		hasComments, err := gh.hasPRComments(ctx, repo, pr.Number)
+		if err != nil {
+			return fmt.Errorf("final PR comment check: %w", err)
+		}
+		if hasComments {
+			logger.Printf("skip PR #%d because comments appeared immediately before merge", pr.Number)
+			return nil
+		}
 	}
 
 	if cfg.DryRun {
@@ -514,6 +544,10 @@ func maintainerComment(cfg Config, pr pullRequest, reason string, message string
 }
 
 func postCommentOnce(ctx context.Context, gh *githubClient, cfg Config, repo string, number int, body string, logger *log.Logger) error {
+	if cfg.NoPRComments {
+		logger.Printf("no-pr-comments is enabled; suppressing comment on PR #%d", number)
+		return nil
+	}
 	marker := firstLine(body)
 	comments, err := gh.listComments(ctx, repo, number)
 	if err != nil {

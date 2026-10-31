@@ -6,7 +6,7 @@ inputs:
     required: false
     default: ${{ github.token }}
   bot-logins:
-    description: Comma-separated bot logins allowed to automerge.
+    description: Comma-separated author logins allowed to automerge. Defaults to dependabot[bot],snyk-bot,renovate[bot],oleg-koval; replaces the default allowlist when set.
     required: false
   maintainer-handles:
     description: Comma-separated GitHub handles to mention when manual action is needed.
@@ -34,6 +34,9 @@ inputs:
     required: false
   dry-run:
     description: Log intended actions without commenting or merging.
+    required: false
+  no-pr-comments:
+    description: Suppress all PR comments and merge only while the PR has no issue comments, review comments, or non-empty review bodies.
     required: false
 runs:
   using: docker
