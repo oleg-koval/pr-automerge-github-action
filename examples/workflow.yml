@@ -7,6 +7,8 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  issue_comment:
+    types: [created, edited, deleted]
   check_suite:
     types: [completed]
   schedule:
@@ -52,6 +54,9 @@ jobs:
               ;;
             check_suite)
               prs="$(jq -c '[.check_suite.pull_requests[]?.number | select(type == "number")] | unique' "$GITHUB_EVENT_PATH")"
+              ;;
+            issue_comment)
+              prs="$(jq -c '[.issue | select(.pull_request != null) | .number | select(type == "number")]' "$GITHUB_EVENT_PATH")"
               ;;
             *)
               prs="$(jq -c '[.pull_request.number | select(type == "number")]' "$GITHUB_EVENT_PATH")"

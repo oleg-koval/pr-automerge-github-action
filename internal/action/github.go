@@ -420,6 +420,7 @@ func (c *githubClient) hasPRComments(ctx context.Context, repo string, number in
 
 	const query = `query($owner:String!,$name:String!,$number:Int!,$threadAfter:String,$reviewAfter:String){repository(owner:$owner,name:$name){pullRequest(number:$number){comments(first:1){totalCount} reviewThreads(first:100,after:$threadAfter){nodes{isResolved}pageInfo{hasNextPage,endCursor}} reviews(first:100,after:$reviewAfter){nodes{body}pageInfo{hasNextPage,endCursor}}}}}`
 	var threadCursor, reviewCursor *string
+	confirmedEmpty := false
 	for {
 		variables := map[string]any{
 			"owner": owner, "name": name, "number": number,
@@ -454,7 +455,13 @@ func (c *githubClient) hasPRComments(ctx context.Context, repo string, number in
 		threadPage := pr.ReviewThreads.PageInfo
 		reviewPage := pr.Reviews.PageInfo
 		if !threadPage.HasNextPage && !reviewPage.HasNextPage {
-			return false, nil
+			if confirmedEmpty {
+				return false, nil
+			}
+			// Re-read every page to catch comments added to already-fetched pages.
+			confirmedEmpty = true
+			threadCursor, reviewCursor = nil, nil
+			continue
 		}
 		if threadPage.HasNextPage {
 			if threadPage.EndCursor == nil || *threadPage.EndCursor == "" {
