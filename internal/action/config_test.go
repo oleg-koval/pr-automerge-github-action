@@ -76,6 +76,17 @@ func TestLoadConfigAuthorAllowlist(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tc.name == "defaults" {
+				wantBots := []string{"dependabot[bot]", "snyk-bot", "renovate[bot]", "oleg-koval"}
+				if len(cfg.Bots) != len(wantBots) {
+					t.Fatalf("default bot allowlist = %v, want %v", cfg.Bots, wantBots)
+				}
+				for _, bot := range wantBots {
+					if !containsLogin(cfg.Bots, bot) {
+						t.Fatalf("default bot allowlist = %v, want %v", cfg.Bots, wantBots)
+					}
+				}
+			}
 			if containsLogin(cfg.Bots, "oleg-koval") != tc.wantOwner || containsLogin(cfg.Bots, "dependabot[bot]") != tc.wantBot {
 				t.Fatalf("unexpected author allowlist: %v", cfg.Bots)
 			}
