@@ -1,6 +1,6 @@
 # PR bot automerge GitHub Action
 
-Automerge pull requests opened by configured maintenance bots. By default, the action comments on failures and successful merge attempts. Enable `no-pr-comments` to suppress every PR comment and require an empty PR discussion before merging.
+Automerge pull requests opened by configured maintenance bots. By default, the action comments on failures and successful merge attempts. Use `suppress-comments` to disable action-generated comments without changing PR eligibility, or use `no-pr-comments` to preserve the stricter behavior that also requires an empty PR discussion.
 
 ## Usage
 
@@ -22,6 +22,10 @@ Copy the complete, security-scoped workflow from [`examples/workflow.yml`](examp
 | `automerge-workflow-path` | unset | Expected `.github/workflows/*.yml` file for the automerge workflow. Required to ignore own checks; if an ignored-name check is pending without this path, the action fails fast with a configuration error instead of waiting. The example sets `.github/workflows/automerge.yml`. |
 | `dry-run` | `false` | Log intended comments and merges without writing. |
 | `no-pr-comments` | `false` | Never add PR comments; skip merging while the PR has an issue comment, review comment, or non-empty review body. |
+| `suppress-comments` | `false` | Never add action-generated PR comments. Unlike `no-pr-comments`, this does not inspect or restrict the PR discussion. |
+| `required-reviewer-login` | unset | Require the latest review from this exact GitHub Bot login to be `APPROVED` or `COMMENTED` on the current head. Unresolved review threads and review API failures still block merging. |
+| `required-reviewer-logins` | unset | Comma-separated exact GitHub Bot logins; every listed reviewer must have a latest current-head `APPROVED` or `COMMENTED` review. |
+| `expected-head-sha` | unset | Skip processing unless the current PR head matches this 40-character SHA, including the final merge check. |
 
 ## Config file
 
@@ -45,13 +49,18 @@ ignored_check_names:
   - automerge
 automerge_workflow_path: .github/workflows/automerge.yml
 no_pr_comments: false
+suppress_comments: false
+# required_reviewer_login: chatgpt-codex-connector[bot]
+# required_reviewer_logins: ["chatgpt-codex-connector[bot]"]
 ```
 
 ## Behavior
 
 The action ignores closed, merged, draft, and non-allowlisted PRs. It waits for checks by default, updates branches behind their base, and only requests a merge when checks/statuses pass, GitHub reports the PR mergeable, and every review thread is resolved. Every distinct status and check run must pass; an old failed record can therefore block even after a newer success. For multi-page responses, two complete scans must agree; inconsistent snapshots remain pending. It refreshes the PR head and checks, then rechecks review threads immediately before requesting the merge. A 409 merge response is considered a stale head only if a subsequent PR read confirms a different SHA; otherwise maintainers are notified. If a merge request races with another actor, the action treats it as successful only when GitHub confirms the PR is merged.
 
-With `no-pr-comments: true`, the action also checks the PR conversation comments, every review thread (including resolved threads), and review summary bodies before checks and again immediately before merging. API errors fail closed. The final check and merge request cannot be atomic, so a comment can race in after the last check.
+When a required-reviewer input is set, the action reads the latest submitted review from each exact account and requires the GitHub API to identify it as a `Bot`, on the current PR head, with state `APPROVED` or `COMMENTED`. `COMMENTED` means the review completed; it does not count as an approval decision. Existing unresolved review threads still block merging, and a review lookup error or unstable paginated result fails closed. The action checks the optional `expected-head-sha` before processing and again immediately before merging; the merge API also receives the evaluated SHA to reject a changed head.
+
+With `suppress-comments: true`, every action-generated PR comment is skipped, but merge decisions are unchanged. With `no-pr-comments: true`, the action retains the stricter behavior: it checks conversation comments, every review thread (including resolved threads), and review summary bodies before checks and again immediately before merging. API errors fail closed. The final checks and merge request cannot be atomic; use branch protection for server-side requirements.
 
 GitHub Actions has no `pull_request_review_thread` trigger, so the example workflow retries every open PR every 10 minutes and supports manual retries with `pr-number`; it paginates discovery and fails loudly rather than silently truncating if the PR set would exceed 255 matrix entries plus the discovery job (256 total jobs). If validation runs in the same workflow, use `needs` so automerge waits for it too. The scheduled retry handles checks from separate workflows.
 
