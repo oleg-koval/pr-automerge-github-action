@@ -379,25 +379,29 @@ func (c *githubClient) listComments(ctx context.Context, repo string, number int
 	return comments, err
 }
 
-func (c *githubClient) latestRequiredReviewerReview(ctx context.Context, repo string, number int, login string) (pullRequestReview, bool, error) {
+func (c *githubClient) listPullRequestReviews(ctx context.Context, repo string, number int) ([]pullRequestReview, error) {
 	first, paginated, err := c.scanPullRequestReviews(ctx, repo, number)
 	if err != nil {
-		return pullRequestReview{}, false, err
+		return nil, err
 	}
 	if paginated {
 		second, _, err := c.scanPullRequestReviews(ctx, repo, number)
 		if err != nil {
-			return pullRequestReview{}, false, err
+			return nil, err
 		}
 		if !reflect.DeepEqual(first, second) {
-			return pullRequestReview{}, false, errPaginationChanged
+			return nil, errPaginationChanged
 		}
 		first = second
 	}
 
+	return first, nil
+}
+
+func latestRequiredReviewerReview(reviews []pullRequestReview, login string) (pullRequestReview, bool, error) {
 	var latest pullRequestReview
 	found := false
-	for _, review := range first {
+	for _, review := range reviews {
 		if !strings.EqualFold(review.User.Login, login) {
 			continue
 		}
@@ -413,7 +417,15 @@ func (c *githubClient) latestRequiredReviewerReview(ctx context.Context, repo st
 }
 
 func (c *githubClient) hasCurrentHeadReviewerCompletion(ctx context.Context, repo string, number int, login string, headSHA string) (bool, error) {
-	review, found, err := c.latestRequiredReviewerReview(ctx, repo, number, login)
+	reviews, err := c.listPullRequestReviews(ctx, repo, number)
+	if err != nil {
+		return false, err
+	}
+	return hasCurrentHeadReviewerCompletion(reviews, login, headSHA)
+}
+
+func hasCurrentHeadReviewerCompletion(reviews []pullRequestReview, login string, headSHA string) (bool, error) {
+	review, found, err := latestRequiredReviewerReview(reviews, login)
 	if err != nil || !found {
 		return false, err
 	}
@@ -421,9 +433,7 @@ func (c *githubClient) hasCurrentHeadReviewerCompletion(ctx context.Context, rep
 		return false, nil
 	}
 	switch strings.ToUpper(review.State) {
-	case "APPROVED":
-		return true, nil
-	case "COMMENTED":
+	case "APPROVED", "COMMENTED":
 		return !reviewReportsProviderFailure(review.Body), nil
 	default:
 		return false, nil
@@ -435,8 +445,11 @@ func reviewReportsProviderFailure(body string) bool {
 	for _, phrase := range []string{
 		"you've hit your code review limit",
 		"you have hit your code review limit",
-		"usage limit",
-		"quota",
+		"usage limit reached",
+		"review quota exceeded",
+		"review quota exhausted",
+		"review limit reached",
+		"review rate limited",
 		"unable to review",
 		"review unavailable",
 		"review skipped",

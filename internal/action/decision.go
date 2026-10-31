@@ -282,8 +282,15 @@ func processPullRequest(ctx context.Context, env env, gh *githubClient, cfg Conf
 	if cfg.RequiredReviewerLogin != "" {
 		requiredReviewers = append(requiredReviewers, cfg.RequiredReviewerLogin)
 	}
+	var reviews []pullRequestReview
+	if len(requiredReviewers) > 0 {
+		reviews, err = gh.listPullRequestReviews(ctx, repo, pr.Number)
+		if err != nil {
+			return fmt.Errorf("list required reviewer reviews on current head: %w", err)
+		}
+	}
 	for _, reviewer := range requiredReviewers {
-		completed, err := gh.hasCurrentHeadReviewerCompletion(ctx, repo, pr.Number, reviewer, latestPR.Head.SHA)
+		completed, err := hasCurrentHeadReviewerCompletion(reviews, reviewer, latestPR.Head.SHA)
 		if err != nil {
 			return fmt.Errorf("check required reviewer %q on current head: %w", reviewer, err)
 		}

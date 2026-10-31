@@ -132,3 +132,27 @@ func TestLoadConfigRejectsInvalidExpectedHeadSHA(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfigRejectsEmptyReviewerOverrides(t *testing.T) {
+	for _, tc := range []struct{ input, value string }{
+		{"required-reviewer-login", "@"},
+		{"required-reviewer-login", "@ "},
+		{"required-reviewer-logins", ",,\t,\n"},
+		{"required-reviewer-logins", "@,@"},
+	} {
+		t.Run(tc.input+"/"+tc.value, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			if err := os.WriteFile(path, []byte("required_reviewer_login: existing[bot]\nrequired_reviewer_logins: [\"existing[bot]\"]\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := loadConfig(context.Background(), nil, env{
+				"INPUT_CONFIG-PATH":                  path,
+				"INPUT_MAINTAINER-HANDLES":           "maintainer",
+				"INPUT_" + strings.ToUpper(tc.input): tc.value,
+			}, "")
+			if err == nil || !strings.Contains(err.Error(), "invalid "+tc.input) {
+				t.Fatalf("error = %v, want invalid %s", err, tc.input)
+			}
+		})
+	}
+}

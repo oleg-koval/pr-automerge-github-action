@@ -73,10 +73,18 @@ func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Co
 		cfg.SuppressComments = strings.EqualFold(value, "true")
 	}
 	if value := env.input("required-reviewer-login"); value != "" {
-		cfg.RequiredReviewerLogin = strings.TrimSpace(strings.TrimPrefix(value, "@"))
+		login := strings.TrimSpace(strings.TrimPrefix(value, "@"))
+		if login == "" {
+			return Config{}, fmt.Errorf("invalid required-reviewer-login: %q", value)
+		}
+		cfg.RequiredReviewerLogin = login
 	}
 	if value := env.input("required-reviewer-logins"); value != "" {
-		cfg.RequiredReviewerLogins = splitCSV(value)
+		logins := splitCSV(value)
+		if len(logins) == 0 {
+			return Config{}, fmt.Errorf("invalid required-reviewer-logins: %q", value)
+		}
+		cfg.RequiredReviewerLogins = logins
 	}
 	if value := env.input("expected-head-sha"); value != "" {
 		value = strings.TrimSpace(value)
