@@ -29,7 +29,7 @@ const defaultDependabotRebaseComment = "@dependabot rebase"
 
 func loadConfig(ctx context.Context, gh *githubClient, env env, repo string) (Config, error) {
 	cfg := Config{
-		Bots:                    []string{"dependabot[bot]", "snyk-bot", "renovate[bot]", "oleg-koval"},
+		Bots:                    []string{"dependabot[bot]", "snyk-bot", "renovate[bot]", "oleg-koval", "oleg-koval-fleet[bot]"},
 		MergeMethod:             "squash",
 		DependabotRebaseComment: defaultDependabotRebaseComment,
 		WaitTimeout:             30 * time.Minute,

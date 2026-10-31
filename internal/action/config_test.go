@@ -77,7 +77,7 @@ func TestLoadConfigAuthorAllowlist(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.name == "defaults" {
-				wantBots := []string{"dependabot[bot]", "snyk-bot", "renovate[bot]", "oleg-koval"}
+				wantBots := []string{"dependabot[bot]", "snyk-bot", "renovate[bot]", "oleg-koval", "oleg-koval-fleet[bot]"}
 				if len(cfg.Bots) != len(wantBots) {
 					t.Fatalf("default bot allowlist = %v, want %v", cfg.Bots, wantBots)
 				}
